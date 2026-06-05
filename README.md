@@ -75,5 +75,3 @@ uv run ruff check .           # lint
 uv run ty check               # type check
 uv run pytest                 # test
 ```
-
-See [SPEC.md](SPEC.md) for the design and [PLAN.md](PLAN.md) for the build plan.
