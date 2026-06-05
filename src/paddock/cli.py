@@ -48,21 +48,27 @@ def run(
     try:
         settings = config.load_merged(target.settings_paths)
         env = config.resolve_environment(settings)
+        volumes = config.volume_args(settings)
     except config.ConfigError as exc:
         _fail(str(exc))
 
     try:
-        docker.run(target.image, env)
+        docker.run(target.image, env, volumes)
     except docker.DockerError as exc:
         _fail(str(exc))
 
 
 @app.command()
 def remove(repo: str = RepoArg) -> None:
-    """Remove the built image."""
+    """Remove the built image and its configured named volumes."""
     target = _resolve(repo)
     try:
+        settings = config.load_merged(target.settings_paths)
+    except config.ConfigError as exc:
+        _fail(str(exc))
+    try:
         docker.remove(target.image)
+        docker.volume_remove(config.named_volumes(settings))
     except docker.DockerError as exc:
         _fail(str(exc))
 

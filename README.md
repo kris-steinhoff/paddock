@@ -18,7 +18,7 @@ paddock --help
 ```sh
 paddock build <repo>          # build the image from the repo's Dockerfile
 paddock run <repo> [--build]  # run the image with configured env injected
-paddock remove <repo>         # remove the built image
+paddock remove <repo>         # remove the built image and its named volumes
 ```
 
 `<repo>` is the full repo path, for example `github.com/kris-steinhoff/paddock`. `run` errors if the image has not been built yet, unless you pass `--build` to build it first.
@@ -62,6 +62,20 @@ environment:
 ```
 
 Each configured variable is passed to the container with its own `docker run -e` flag.
+
+#### volumes
+
+An optional `volumes` hash attaches Docker volumes to the container. Each member's value is a raw `docker run -v` spec, passed through verbatim:
+
+```yaml
+volumes:
+  cache: paddock-cache:/home/dev/.cache       # named volume
+  workspace: /home/me/src/myrepo:/workspace:ro  # bind mount, read-only
+```
+
+The key is just a merge handle (deep-merged least specific first, like `environment`, so a more specific file can override one entry). Named volume vs. bind mount follows docker's own `-v` heuristic on the source (the part before the first `:`): a bare name is a named volume, anything that looks like a path (contains `/`, or starts with `.`/`~`) is a bind mount. The value is handed to docker without a shell, so `~` and `$VAR` are not expanded. Use absolute host paths for bind mounts.
+
+`paddock remove` deletes the configured named volumes along with the image. Bind-mounted host directories are left untouched.
 
 ## Development
 

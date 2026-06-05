@@ -23,9 +23,9 @@ Requires Python >= 3.13. `ruff`, `ty`, and `pytest` are dev dependencies (run th
 Four small modules under `src/paddock/`, each owning one stage of the pipeline:
 
 - `resolver.py` — turns a `<repo>` argument into a `RepoTarget`. The repo path *is* the convention: it splits on `/` to arbitrary depth (so GitLab subgroups need no special handling) and maps directly to `repos/<path>/Dockerfile` and a lowercased `paddock/<path>` image tag. There is deliberately no name-to-image mapping file. It also computes `settings_paths`: one `settings.yaml` per directory level from `repos/` down to the leaf, ordered least to most specific, existing files only.
-- `config.py` — pydantic models plus settings merge and env resolution. `load_merged` deep-merges each `settings.yaml` (most specific wins per `environment` key) and validates with `extra="forbid"`. `resolve_environment` turns each value into a string: a literal is used as-is, a `{command: ...}` is run via `sh -c` with stdout's trailing newline stripped.
-- `docker.py` — thin list-form `subprocess` wrappers (no shell) for `docker build/run/image inspect/rmi`.
-- `cli.py` — the typer app wiring the above into `build`, `run [--build]`, `remove`.
+- `config.py` — pydantic models plus settings merge and env resolution. `load_merged` deep-merges each `settings.yaml` (most specific wins per `environment`/`volumes` key) and validates with `extra="forbid"`. `resolve_environment` turns each value into a string: a literal is used as-is, a `{command: ...}` is run via `sh -c` with stdout's trailing newline stripped. The optional `volumes` hash maps a merge-key to a raw `docker run -v` spec: `volume_args` returns those strings verbatim for `run`, and `named_volumes` applies docker's `-v` heuristic (bare source = named volume) to pick which to delete on `remove`.
+- `docker.py` — thin list-form `subprocess` wrappers (no shell) for `docker build/run/image inspect/rmi/volume rm`.
+- `cli.py` — the typer app wiring the above into `build`, `run [--build]`, `remove` (which also deletes the configured named volumes).
 
 ### Error handling convention
 
