@@ -24,6 +24,7 @@ EnvValue = str | CommandValue
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     environment: dict[str, EnvValue] = {}
+    volumes: dict[str, str] = {}
 
 
 def _deep_merge(base: dict, overlay: dict) -> dict:
@@ -80,3 +81,19 @@ def resolve_environment(settings: Settings) -> dict[str, str]:
         else:
             resolved[name] = value
     return resolved
+
+
+def _is_named_volume(source: str) -> bool:
+    """Apply docker's ``-v`` heuristic: a bare name is a named volume, a path is a bind."""
+    return "/" not in source and not source.startswith((".", "~"))
+
+
+def volume_args(settings: Settings) -> list[str]:
+    """Return each ``volumes`` value as a raw ``docker run -v`` argument."""
+    return list(settings.volumes.values())
+
+
+def named_volumes(settings: Settings) -> list[str]:
+    """Return the source of every ``volumes`` entry that is a named volume."""
+    sources = [value.split(":", 1)[0] for value in settings.volumes.values()]
+    return [source for source in sources if _is_named_volume(source)]

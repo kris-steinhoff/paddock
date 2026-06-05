@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from paddock.config import ConfigError, load_merged, resolve_environment
+from paddock.config import (
+    ConfigError,
+    load_merged,
+    named_volumes,
+    resolve_environment,
+    volume_args,
+)
 
 
 def _write(tmp_path: Path, name: str, body: str) -> Path:
@@ -53,3 +59,48 @@ def test_command_missing_key_rejected(tmp_path: Path):
 
 def test_empty_settings_list_is_empty_environment():
     assert resolve_environment(load_merged([])) == {}
+
+
+def test_volume_args_returns_raw_strings(tmp_path: Path):
+    path = _write(
+        tmp_path,
+        "v.yaml",
+        "volumes:\n  cache: paddock-cache:/home/dev/.cache\n  src: /home/me/src:/workspace:ro\n",
+    )
+    assert volume_args(load_merged([path])) == [
+        "paddock-cache:/home/dev/.cache",
+        "/home/me/src:/workspace:ro",
+    ]
+
+
+def test_named_volumes_excludes_bind_mounts(tmp_path: Path):
+    path = _write(
+        tmp_path,
+        "v.yaml",
+        "volumes:\n"
+        "  named: paddock-cache:/home/dev/.cache\n"
+        "  abs: /home/me/src:/workspace\n"
+        "  rel: ./data:/data\n"
+        "  home: ~/state:/state\n",
+    )
+    assert named_volumes(load_merged([path])) == ["paddock-cache"]
+
+
+def test_volumes_merge_precedence_most_specific_wins(tmp_path: Path):
+    base = _write(tmp_path, "base.yaml", "volumes:\n  cache: old:/c\n  keep: keep:/k\n")
+    override = _write(tmp_path, "override.yaml", "volumes:\n  cache: new:/c\n")
+
+    settings = load_merged([base, override])
+    assert settings.volumes == {"cache": "new:/c", "keep": "keep:/k"}
+
+
+def test_non_string_volume_value_rejected(tmp_path: Path):
+    path = _write(tmp_path, "bad.yaml", "volumes:\n  cache:\n    name: paddock-cache\n")
+    with pytest.raises(ConfigError):
+        load_merged([path])
+
+
+def test_absent_volumes_is_empty():
+    settings = load_merged([])
+    assert volume_args(settings) == []
+    assert named_volumes(settings) == []

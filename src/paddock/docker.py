@@ -17,10 +17,12 @@ def build(image: str, context_dir: Path) -> None:
     _run(["docker", "build", "-t", image, str(context_dir)])
 
 
-def run(image: str, env: dict[str, str]) -> None:
+def run(image: str, env: dict[str, str], volumes: list[str]) -> None:
     args = ["docker", "run", "-it", "--rm"]
     for name, value in env.items():
         args += ["-e", f"{name}={value}"]
+    for mount in volumes:
+        args += ["-v", mount]
     args.append(image)
     _run(args)
 
@@ -36,6 +38,12 @@ def image_exists(image: str) -> bool:
 
 def remove(image: str) -> None:
     _run(["docker", "rmi", image])
+
+
+def volume_remove(names: list[str]) -> None:
+    if not names:
+        return
+    _run(["docker", "volume", "rm", "-f", *names])
 
 
 def _run(args: list[str]) -> None:
