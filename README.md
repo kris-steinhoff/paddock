@@ -61,6 +61,14 @@ environment:
     command: op read op://Private/Gitlab-PAT/token
 ```
 
+Since the command runs through a shell, you can pipe to extract a single value. For example, pull a short-lived AWS session token from your current profile:
+
+```yaml
+environment:
+  AWS_SESSION_TOKEN:
+    command: aws configure export-credentials | jq -r .SessionToken
+```
+
 Each configured variable is passed to the container with its own `docker run -e` flag.
 
 #### volumes
