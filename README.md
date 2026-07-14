@@ -111,14 +111,19 @@ ca_certificates:
 Paths are expanded (`~` works) and must exist — `paddock --build` fails fast
 with a clear error otherwise, rather than deep inside a docker build. Each
 listed certificate is copied into the build context and trusted via
-`update-ca-certificates` **before** any other networked step in the
-Dockerfile (apt/curl/npm), so it covers both the image build and everything
-the running container does afterward — the built image already carries the
-trust, no runtime mount needed. Node-based tools (`claude`, `opencode`,
-`npm`) and some Python tooling ignore the system trust store by default, so
-the image also pins `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
-`REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `PIP_CERT`, and `GIT_SSL_CAINFO` at
-the merged system bundle.
+`update-ca-certificates` right after the base image's first `apt-get install`
+(which is what provides the `ca-certificates`/`update-ca-certificates` tooling
+in the first place — that one step is unavoidably not covered, so it needs to
+reach the network without the corporate CA already trusted, e.g. over a
+network path the proxy doesn't intercept), and before every other networked
+step in the Dockerfile (curl/npm/further apt). This covers both the image
+build from that point on and everything the running container does
+afterward — the built image already carries the trust, no runtime mount
+needed. Node-based tools (`claude`, `opencode`, `npm`) and some Python
+tooling ignore the system trust store by default, so the image also pins
+`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`,
+`CURL_CA_BUNDLE`, `PIP_CERT`, and `GIT_SSL_CAINFO` at the merged system
+bundle.
 
 Changing `ca_certificates` requires `paddock --build` to take effect (it's
 baked into the image, not read at container start). This only covers CA

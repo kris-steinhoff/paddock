@@ -1,22 +1,8 @@
 FROM node:24-trixie-slim
 
-# Trust any extra CA(s) (e.g. a corporate TLS-intercepting proxy) before any
-# other networked step below, using ca-certificates/update-ca-certificates
-# already present in the base image. ca-certificates/ always exists in the
-# build context (empty if no ca_certificates are configured), so this COPY
-# never fails for lack of a source.
-COPY ca-certificates/ /usr/local/share/ca-certificates/paddock/
-RUN update-ca-certificates
-# System trust store covers apt/curl/git/gh/glab/uv, but Node (and so npm,
-# claude, opencode) and some Python tooling ship their own bundles and ignore
-# it unless told to via these env vars.
-ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt \
-    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
-    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
-    CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
-    PIP_CERT=/etc/ssl/certs/ca-certificates.crt \
-    GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
-
+# ca-certificates (and so update-ca-certificates) isn't in the base image;
+# apt-get itself needs it before trusting any extra CA below, so this has to
+# be its own step ahead of the corporate-CA block, not folded into it.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         git \
@@ -43,6 +29,22 @@ RUN apt-get update \
     && ln -sf /usr/bin/batcat /usr/local/bin/bat
 
 ENV LANG=en_US.UTF-8
+
+# Trust any extra CA(s) (e.g. a corporate TLS-intercepting proxy) before any
+# other networked step below. ca-certificates/ always exists in the build
+# context (empty if no ca_certificates are configured), so this COPY never
+# fails for lack of a source.
+COPY ca-certificates/ /usr/local/share/ca-certificates/paddock/
+RUN update-ca-certificates
+# System trust store covers apt/curl/git/gh/glab/uv, but Node (and so npm,
+# claude, opencode) and some Python tooling ship their own bundles and ignore
+# it unless told to via these env vars.
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    PIP_CERT=/etc/ssl/certs/ca-certificates.crt \
+    GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
 
 # Debian's apt doesn't carry gh; pull from GitHub's own apt repo per its
 # official install docs (https://github.com/cli/cli/blob/trunk/docs/install_linux.md).
