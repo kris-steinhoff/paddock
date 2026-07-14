@@ -1,24 +1,20 @@
-"""The paddock CLI: build, run, and remove a per-repo container."""
+"""The paddock CLI: build, start, stop, restart, and remove the agent container.
+
+Uses herdr to attach to a general-purpose agent container.
+"""
 
 from __future__ import annotations
 
+import shutil
 from typing import NoReturn
 
 import typer
 
-from . import config, docker
-from .resolver import RepoError, RepoTarget, resolve
+from . import config, container, paths, ssh
 
-app = typer.Typer(no_args_is_help=True, add_completion=False, help=__doc__)
+app = typer.Typer(add_completion=False, help=__doc__)
 
-RepoArg = typer.Argument(..., metavar="REPO", help="Full repo path, e.g. github.com/org/name")
-
-
-def _resolve(repo: str) -> RepoTarget:
-    try:
-        return resolve(repo)
-    except RepoError as exc:
-        _fail(str(exc))
+REQUIRED_EXECUTABLES = ["docker", "herdr", "ssh-keygen"]
 
 
 def _fail(message: str) -> NoReturn:
@@ -26,57 +22,100 @@ def _fail(message: str) -> NoReturn:
     raise typer.Exit(code=1)
 
 
-@app.command()
-def build(repo: str = RepoArg) -> None:
-    """Build the image from the repo's Dockerfile."""
-    target = _resolve(repo)
-    _build(target)
+def _check_dependencies() -> None:
+    missing = [exe for exe in REQUIRED_EXECUTABLES if shutil.which(exe) is None]
+    if missing:
+        _fail(f"required executable(s) not found on PATH: {', '.join(missing)}")
 
 
-@app.command()
-def run(
-    repo: str = RepoArg,
-    build: bool = typer.Option(False, "--build", help="Build the image before running."),
-) -> None:
-    """Run the image, injecting configured environment variables."""
-    target = _resolve(repo)
-    if build:
-        _build(target)
-    elif not docker.image_exists(target.image):
-        _fail(f"image {target.image} not built yet; pass --build or run `paddock build {repo}`")
-
+def _load_settings() -> config.Settings:
     try:
-        settings = config.load_merged(target.settings_paths)
+        return config.load_settings(paths.settings_path())
+    except config.ConfigError as exc:
+        _fail(str(exc))
+
+
+def _build() -> None:
+    settings = _load_settings()
+    try:
+        ca_certificates = config.ca_certificate_paths(settings)
+    except config.ConfigError as exc:
+        _fail(str(exc))
+    try:
+        container.build(ca_certificates)
+    except container.DockerError as exc:
+        _fail(str(exc))
+
+
+def _start() -> None:
+    if not container.image_exists():
+        _build()
+    try:
+        authorized_keys = ssh.ensure_keypair()
+    except ssh.SshError as exc:
+        _fail(str(exc))
+    settings = _load_settings()
+    try:
         env = config.resolve_environment(settings)
-        volumes = config.volume_args(settings)
     except config.ConfigError as exc:
         _fail(str(exc))
-
     try:
-        docker.run(target.image, env, volumes)
-    except docker.DockerError as exc:
+        container.start(env, authorized_keys)
+    except container.DockerError as exc:
         _fail(str(exc))
 
 
 @app.command()
-def remove(repo: str = RepoArg) -> None:
-    """Remove the built image and its configured named volumes."""
-    target = _resolve(repo)
-    try:
-        settings = config.load_merged(target.settings_paths)
-    except config.ConfigError as exc:
-        _fail(str(exc))
-    try:
-        docker.remove(target.image)
-        docker.volume_remove(config.named_volumes(settings))
-    except docker.DockerError as exc:
-        _fail(str(exc))
+def main(
+    build: bool = typer.Option(False, "--build", help="Build the image."),
+    remove: bool = typer.Option(False, "--remove", help="Stop and remove the container and image."),
+    start: bool = typer.Option(False, "--start", help="Start the container."),
+    stop: bool = typer.Option(False, "--stop", help="Stop the container."),
+    restart: bool = typer.Option(False, "--restart", help="Restart the container."),
+) -> None:
+    """Uses herdr to attach to a general-purpose agent container."""
+    flags = {
+        "--build": build,
+        "--remove": remove,
+        "--start": start,
+        "--stop": stop,
+        "--restart": restart,
+    }
+    chosen = [name for name, value in flags.items() if value]
+    if len(chosen) > 1:
+        _fail(f"only one of {', '.join(chosen)} may be given at a time")
 
+    _check_dependencies()
 
-def _build(target: RepoTarget) -> None:
-    if not target.dockerfile.is_file():
-        _fail(f"no Dockerfile at {target.dockerfile}")
-    try:
-        docker.build(target.image, target.leaf_dir)
-    except docker.DockerError as exc:
-        _fail(str(exc))
+    if build:
+        _build()
+        return
+
+    if remove:
+        try:
+            container.remove()
+        except container.DockerError as exc:
+            _fail(str(exc))
+        return
+
+    if start:
+        _start()
+        return
+
+    if stop:
+        try:
+            container.stop()
+        except container.DockerError as exc:
+            _fail(str(exc))
+        return
+
+    if restart:
+        try:
+            container.restart()
+        except container.DockerError as exc:
+            _fail(str(exc))
+        return
+
+    if not container.container_running():
+        _start()
+    ssh.attach(container.PORT)

@@ -1,4 +1,4 @@
-"""Settings models, discovery/merge, and environment resolution."""
+"""Settings model, single-file load, and environment resolution."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 
 class ConfigError(Exception):
-    """Raised when settings cannot be loaded, merged, or resolved."""
+    """Raised when settings cannot be loaded or resolved."""
 
 
 class CommandValue(BaseModel):
@@ -24,38 +24,23 @@ EnvValue = str | CommandValue
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     environment: dict[str, EnvValue] = {}
-    volumes: dict[str, str] = {}
+    ca_certificates: list[str] = []
 
 
-def _deep_merge(base: dict, overlay: dict) -> dict:
-    """Merge ``overlay`` onto ``base``, recursing into nested dicts."""
-    result = dict(base)
-    for key, value in overlay.items():
-        existing = result.get(key)
-        if isinstance(existing, dict) and isinstance(value, dict):
-            result[key] = _deep_merge(existing, value)
-        else:
-            result[key] = value
-    return result
-
-
-def load_merged(paths: list[Path]) -> Settings:
-    """Read and deep-merge settings files, least to most specific, then validate.
-
-    The most specific file wins per ``environment`` key.
-    """
-    merged: dict = {}
-    for path in paths:
-        try:
-            data = yaml.safe_load(path.read_text()) or {}
-        except yaml.YAMLError as exc:
-            raise ConfigError(f"failed to parse {path}: {exc}") from exc
-        if not isinstance(data, dict):
-            raise ConfigError(f"{path}: top level must be a hash")
-        merged = _deep_merge(merged, data)
+def load_settings(path: Path) -> Settings:
+    """Load settings from ``path``. A missing file is treated as empty settings."""
+    if not path.is_file():
+        return Settings()
 
     try:
-        return Settings.model_validate(merged)
+        data = yaml.safe_load(path.read_text()) or {}
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"failed to parse {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path}: top level must be a hash")
+
+    try:
+        return Settings.model_validate(data)
     except ValidationError as exc:
         raise ConfigError(f"invalid settings: {exc}") from exc
 
@@ -83,17 +68,16 @@ def resolve_environment(settings: Settings) -> dict[str, str]:
     return resolved
 
 
-def _is_named_volume(source: str) -> bool:
-    """Apply docker's ``-v`` heuristic: a bare name is a named volume, a path is a bind."""
-    return "/" not in source and not source.startswith((".", "~"))
+def ca_certificate_paths(settings: Settings) -> list[Path]:
+    """Expand and validate each configured CA certificate path.
 
-
-def volume_args(settings: Settings) -> list[str]:
-    """Return each ``volumes`` value as a raw ``docker run -v`` argument."""
-    return list(settings.volumes.values())
-
-
-def named_volumes(settings: Settings) -> list[str]:
-    """Return the source of every ``volumes`` entry that is a named volume."""
-    sources = [value.split(":", 1)[0] for value in settings.volumes.values()]
-    return [source for source in sources if _is_named_volume(source)]
+    Raises ``ConfigError`` early (rather than failing later inside a
+    ``docker build``) if a configured path doesn't exist.
+    """
+    resolved: list[Path] = []
+    for raw in settings.ca_certificates:
+        path = Path(raw).expanduser()
+        if not path.is_file():
+            raise ConfigError(f"ca_certificates entry not found: {path}")
+        resolved.append(path)
+    return resolved

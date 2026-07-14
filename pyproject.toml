@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "paddock"
 version = "1.0"
-description = "Build, run, and remove a per-repo container with configured environment variables injected."
+description = "Build, start, stop, and remove a general-purpose agent container, attached to with herdr."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

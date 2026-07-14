@@ -1,8 +1,14 @@
 # paddock
 
-Build, run, and remove a per-repo development container, with environment variables (such as a GitLab PAT) injected from merged config.
+Build, start, stop, and remove a single general-purpose development
+container, and attach to it with [herdr](https://herdr.dev). One Dockerfile
+ships with paddock itself (no per-repo image to author) — the same
+container every time, mirroring the pattern in
+[agent-container](https://github.com/kris-steinhoff/agent-container) but
+orchestrated directly by paddock instead of docker-compose.
 
-Each repo gets its own `Dockerfile` and optional `settings.yaml` files under XDG config. The repo's full path is the convention: it maps directly to a directory tree and to a Docker image tag, so there is no name-to-image mapping to maintain.
+Ships: `claude`, `opencode`, `neovim`, `gh`, `glab`, `uv`, `chezmoi`, and
+`sshd` so herdr can attach to a persistent session inside the container.
 
 ## Install
 
@@ -13,55 +19,75 @@ uv tool install git+https://github.com/kris-steinhoff/paddock
 paddock --help
 ```
 
+Requires `docker` and `herdr` installed and on `PATH`.
+
 ## Usage
 
 ```sh
-paddock build <repo>          # build the image from the repo's Dockerfile
-paddock run <repo> [--build]  # run the image with configured env injected
-paddock remove <repo>         # remove the built image and its named volumes
+paddock            # build if needed, start if needed, attach with herdr
+paddock --build    # (re)build the image
+paddock --start     # create/start the container without attaching
+paddock --stop      # stop the container
+paddock --restart   # restart the container
+paddock --remove    # stop and remove the container and image (volumes are kept)
 ```
 
-`<repo>` is the full repo path, for example `github.com/kris-steinhoff/paddock`. `run` errors if the image has not been built yet, unless you pass `--build` to build it first.
+The flags are standalone actions and mutually exclusive; only bare `paddock`
+attaches. To rebuild and reattach: `paddock --build && paddock`.
+
+## SSH
+
+paddock generates its own dedicated ed25519 keypair on first use, under
+`${XDG_STATE_HOME:-~/.local/state}/paddock/ssh_home/.ssh/`. The public key is
+mounted into the container as its `authorized_keys`; nothing is added to
+your own `~/.ssh`.
+
+Attaching runs `herdr --remote ssh://agent@localhost:2223` with `HOME`
+pointed at that same directory for just that one subprocess call, so herdr's
+managed ssh config, known_hosts, and identity file resolution are all scoped
+to paddock's own directory instead of your real `~/.ssh/config`.
+
+## Persistence
+
+Two named docker volumes persist across `--stop`/`--restart` and container
+recreation:
+
+- `paddock_home` → `/home/agent` — dotfiles, shell history, tool auth
+  (`claude`, `gh`, etc.)
+- `paddock_ssh_host_keys` → `/etc/ssh` — sshd's host keys, so rebuilding the
+  image doesn't change the container's host key and trip
+  `StrictHostKeyChecking`
+
+`paddock --remove` removes the container and image but leaves both volumes
+in place. Delete them yourself with `docker volume rm paddock_home
+paddock_ssh_host_keys` if you want a truly clean slate.
+
+## Credentials
+
+Not baked into the image. Either:
+
+- Run `claude` / `opencode` / `gh auth login` inside the container once and
+  complete the normal interactive login, which persists in the
+  `paddock_home` volume, or
+- Set environment variables in `settings.yaml` (see below), injected via
+  `docker run -e` at container start.
 
 ## Configuration
 
-Config lives under `${XDG_CONFIG_HOME:-$HOME/.config}/paddock`. The `repos/` subtree mirrors each repo's full path, so host + org + name uniquely identify a project:
-
-```
-~/.config/paddock/
-  repos/
-    settings.yaml            # global defaults, merged into every project
-    github.com/
-      settings.yaml          # per-provider
-      kris-steinhoff/
-        settings.yaml        # per-org (optional)
-        paddock/
-          Dockerfile
-          settings.yaml      # per-project
-```
-
-`paddock run github.com/kris-steinhoff/paddock` builds and runs the image tagged `paddock/github.com/kris-steinhoff/paddock` from `repos/github.com/kris-steinhoff/paddock/Dockerfile`. The repo argument splits on `/` to arbitrary depth, so GitLab subgroups (`gitlab.com/org/subgroup/project`) work with no special handling.
-
-### settings.yaml
-
-Optional at every directory level from `repos/` down to the leaf. Files are deep-merged, least specific first, and the most specific file wins per environment-variable key. So you can set a PAT once at the provider level and override it for one org or project.
-
-The top level is a hash with an `environment` key. Each member names an environment variable. A string value is used directly:
+A single optional file:
+`${XDG_CONFIG_HOME:-~/.config}/paddock/settings.yaml`.
 
 ```yaml
 environment:
-  GITLAB_PAT: "my secret"
-```
-
-A hash value must have a `command` key, run via `sh -c`. Its stdout (trailing newline stripped) becomes the value:
-
-```yaml
-environment:
+  ANTHROPIC_API_KEY: "sk-..."
   GITLAB_PAT:
     command: op read op://Private/Gitlab-PAT/token
 ```
 
-Since the command runs through a shell, you can pipe to extract a single value. For example, pull a short-lived AWS session token from your current profile:
+Each member names an environment variable. A string value is used directly.
+A hash value must have a `command` key, run via `sh -c`; its stdout (trailing
+newline stripped) becomes the value. Since the command runs through a shell,
+you can pipe to extract a single value:
 
 ```yaml
 environment:
@@ -69,21 +95,36 @@ environment:
     command: aws configure export-credentials | jq -r .SessionToken
 ```
 
-Each configured variable is passed to the container with its own `docker run -e` flag.
+Each configured variable is passed to the container with its own
+`docker run -e` flag whenever it's (re)started.
 
-#### volumes
+### Corporate CA certificates
 
-An optional `volumes` hash attaches Docker volumes to the container. Each member's value is a raw `docker run -v` spec, passed through verbatim:
+If your network runs a TLS-intercepting proxy, list its root CA(s) under
+`ca_certificates`:
 
 ```yaml
-volumes:
-  cache: paddock-cache:/home/dev/.cache       # named volume
-  workspace: /home/me/src/myrepo:/workspace:ro  # bind mount, read-only
+ca_certificates:
+  - ~/corp/proxy-ca.pem
 ```
 
-The key is just a merge handle (deep-merged least specific first, like `environment`, so a more specific file can override one entry). Named volume vs. bind mount follows docker's own `-v` heuristic on the source (the part before the first `:`): a bare name is a named volume, anything that looks like a path (contains `/`, or starts with `.`/`~`) is a bind mount. The value is handed to docker without a shell, so `~` and `$VAR` are not expanded. Use absolute host paths for bind mounts.
+Paths are expanded (`~` works) and must exist — `paddock --build` fails fast
+with a clear error otherwise, rather than deep inside a docker build. Each
+listed certificate is copied into the build context and trusted via
+`update-ca-certificates` **before** any other networked step in the
+Dockerfile (apt/curl/npm), so it covers both the image build and everything
+the running container does afterward — the built image already carries the
+trust, no runtime mount needed. Node-based tools (`claude`, `opencode`,
+`npm`) and some Python tooling ignore the system trust store by default, so
+the image also pins `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
+`REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `PIP_CERT`, and `GIT_SSL_CAINFO` at
+the merged system bundle.
 
-`paddock remove` deletes the configured named volumes along with the image. Bind-mounted host directories are left untouched.
+Changing `ca_certificates` requires `paddock --build` to take effect (it's
+baked into the image, not read at container start). This only covers CA
+trust — if your network also requires an `HTTP_PROXY`/`HTTPS_PROXY` to reach
+the network *during the build itself*, that's not wired up yet (proxy env
+vars for the running container can already go in `environment` above).
 
 ## Development
 
