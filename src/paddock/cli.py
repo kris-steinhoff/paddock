@@ -6,6 +6,7 @@ Uses herdr to attach to a general-purpose agent container.
 from __future__ import annotations
 
 import shutil
+from importlib.metadata import version as _pkg_version
 from typing import NoReturn
 
 import typer
@@ -15,6 +16,12 @@ from . import config, container, paths, ssh
 app = typer.Typer(add_completion=False, help=__doc__)
 
 REQUIRED_EXECUTABLES = ["docker", "herdr", "ssh-keygen"]
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(_pkg_version("paddock"))
+        raise typer.Exit()
 
 
 def _fail(message: str) -> NoReturn:
@@ -72,6 +79,13 @@ def main(
     start: bool = typer.Option(False, "--start", help="Start the container."),
     stop: bool = typer.Option(False, "--stop", help="Stop the container."),
     restart: bool = typer.Option(False, "--restart", help="Restart the container."),
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show the paddock version and exit.",
+    ),
 ) -> None:
     """Uses herdr to attach to a general-purpose agent container."""
     flags = {
