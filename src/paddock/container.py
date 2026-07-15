@@ -54,7 +54,7 @@ def container_running() -> bool:
     return completed.returncode == 0 and completed.stdout.strip() == "true"
 
 
-def start(env: dict[str, str], authorized_keys: Path) -> None:
+def start(authorized_keys: Path) -> None:
     """Create and start the container if it doesn't exist yet, else start it."""
     if container_exists():
         if not container_running():
@@ -80,10 +80,35 @@ def start(env: dict[str, str], authorized_keys: Path) -> None:
         "--restart",
         "unless-stopped",
     ]
-    for name, value in env.items():
-        args += ["-e", f"{name}={value}"]
     args.append(IMAGE)
     _run(args)
+
+
+def set_environment(env: dict[str, str]) -> None:
+    """Write resolved env vars into the container's ``~/.ssh/environment``.
+
+    sshd (with ``PermitUserEnvironment yes``, see ``sshd_config``) reads that
+    file fresh for every new session, so this is how ``settings.yaml``
+    env changes reach the container: on the *next* shell/herdr session, not
+    by rebuilding or restarting the container, which would kill anything
+    already running inside it. Lives on the ``paddock_home`` volume, so it
+    also survives container recreation.
+    """
+    content = "".join(f"{name}={value}\n" for name, value in env.items())
+    _run_with_input(
+        [
+            "docker",
+            "exec",
+            "-i",
+            CONTAINER,
+            "sh",
+            "-c",
+            "cat > /home/agent/.ssh/environment "
+            "&& chown agent:agent /home/agent/.ssh/environment "
+            "&& chmod 600 /home/agent/.ssh/environment",
+        ],
+        content,
+    )
 
 
 def stop() -> None:
@@ -111,6 +136,17 @@ def _check(args: list[str]) -> bool:
 def _run(args: list[str]) -> None:
     try:
         subprocess.run(args, check=True)
+    except FileNotFoundError as exc:
+        raise DockerError("docker executable not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise DockerError(
+            f"docker command failed (exit {exc.returncode}): {' '.join(args)}"
+        ) from exc
+
+
+def _run_with_input(args: list[str], input_text: str) -> None:
+    try:
+        subprocess.run(args, input=input_text, text=True, check=True)
     except FileNotFoundError as exc:
         raise DockerError("docker executable not found on PATH") from exc
     except subprocess.CalledProcessError as exc:

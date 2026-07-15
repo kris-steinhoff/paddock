@@ -6,3 +6,6 @@ PubkeyAuthentication yes
 X11Forwarding no
 AllowAgentForwarding yes
 PrintMotd no
+# Lets paddock push settings.yaml env var changes into new sessions by
+# writing ~/.ssh/environment, without needing to restart the container.
+PermitUserEnvironment yes

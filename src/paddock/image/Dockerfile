@@ -89,7 +89,14 @@ RUN useradd -m -s /usr/bin/zsh agent \
     && chmod 700 /home/agent/.ssh \
     && chown -R agent:agent /home/agent/.ssh
 
-COPY sshd_config /etc/ssh/sshd_config.d/paddock.conf
+# Baked outside /etc/ssh, not straight into sshd_config.d: /etc/ssh is the
+# paddock_ssh_host_keys volume (so host keys survive container recreation),
+# and Docker only seeds a named volume from the image on its *first* use —
+# once created, the volume's own content always wins over the image, so a
+# later image rebuild would silently never reach a config file placed
+# directly under /etc/ssh. entrypoint.sh copies it into place on every start
+# instead, the same way it handles authorized_keys below.
+COPY sshd_config /etc/paddock/sshd_config
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 755 /usr/local/bin/entrypoint.sh
 

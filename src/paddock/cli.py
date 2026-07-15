@@ -67,7 +67,8 @@ def _start() -> None:
     except config.ConfigError as exc:
         _fail(str(exc))
     try:
-        container.start(env, authorized_keys)
+        container.start(authorized_keys)
+        container.set_environment(env)
     except container.DockerError as exc:
         _fail(str(exc))
 
@@ -130,6 +131,8 @@ def main(
             _fail(str(exc))
         return
 
-    if not container.container_running():
-        _start()
+    # Always run, even if already running: this is also how env var changes
+    # in settings.yaml reach the container, via container.set_environment,
+    # without restarting it and killing whatever's running inside.
+    _start()
     ssh.attach(container.PORT)

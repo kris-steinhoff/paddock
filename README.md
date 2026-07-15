@@ -69,8 +69,8 @@ Not baked into the image. Either:
 - Run `claude` / `opencode` / `gh auth login` inside the container once and
   complete the normal interactive login, which persists in the
   `paddock_home` volume, or
-- Set environment variables in `settings.yaml` (see below), injected via
-  `docker run -e` at container start.
+- Set environment variables in `settings.yaml` (see below), picked up by
+  every new shell/session without needing a container restart.
 
 ## Configuration
 
@@ -95,8 +95,11 @@ environment:
     command: aws configure export-credentials | jq -r .SessionToken
 ```
 
-Each configured variable is passed to the container with its own
-`docker run -e` flag whenever it's (re)started.
+Every `paddock` invocation re-resolves this list and writes it to the
+container's `~/.ssh/environment` (readable by sshd only, on the persistent
+`paddock_home` volume), so edits take effect for the next new shell/session
+without restarting the container or disturbing anything already running
+inside it.
 
 ### Corporate CA certificates
 
