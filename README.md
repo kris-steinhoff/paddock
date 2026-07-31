@@ -182,6 +182,113 @@ docker compose -f src/paddock/image/docker-compose.yml \
   -f ~/.config/paddock/docker-compose.override.yml up -d
 ```
 
+## Migrating from an older setup
+
+paddock has gone through two earlier shapes: agent-container (a separate,
+per-repo compose project) and paddock 2.x (this same project, but driving
+`docker build`/`docker run` directly instead of compose). Both left behind a
+container, an image, and — the part worth being careful with — a home
+volume full of tool auth and shell history. The risk in either migration is
+losing that volume by forgetting about it.
+
+### From agent-container
+
+agent-container's compose project was named `agent-container`, so its
+volumes are `agent-container_agent_home` and `agent-container_ssh_host_keys`.
+Reuse the home volume instead of starting paddock with an empty one, by
+declaring paddock's own `agent_home` volume as external and pointing it at
+the old name — the same override file used for bind mounts and extra
+environment above:
+
+```yaml
+# ~/.config/paddock/docker-compose.override.yml
+volumes:
+  agent_home:
+    external: true
+    name: agent-container_agent_home
+```
+
+```sh
+docker compose -f src/paddock/image/docker-compose.yml \
+  -f ~/.config/paddock/docker-compose.override.yml up -d
+```
+
+paddock now starts against the migrated volume instead of creating a fresh
+`paddock_agent_home`. Don't bother doing the same for
+`agent-container_ssh_host_keys`: host keys are cheap to regenerate (one
+`StrictHostKeyChecking` prompt on your next connection) and paddock's
+compose file already provisions its own `sshd_host_keys` volume, so nothing
+is gained by carrying the old one forward.
+
+Once you've confirmed paddock is up and reading from the migrated volume,
+stop and remove the old stack:
+
+```sh
+docker compose -p agent-container down
+```
+
+**Do not add `-v` to that command.** `down -v` also deletes the stack's
+volumes, including the `agent-container_agent_home` volume you just adopted.
+
+If your `~/.ssh/config` has the line agent-container's README told you to
+add — something like `Include ~/.config/agent-container/ssh_config` — remove
+it or repoint it. paddock doesn't ship or generate an `ssh_config` file of
+its own to include; connecting is your own business (see [SSH](#ssh)). A
+leftover `Include` pointing at a file that no longer exists is a silent ssh
+config error rather than a loud one, so replace it with a hand-written host
+block instead:
+
+```
+Host paddock
+  HostName localhost
+  Port 2222
+  User agent
+  IdentityFile ~/.ssh/id_ed25519   # whatever key's public half is in ~/.config/paddock/authorized_keys
+```
+
+### From paddock 2.x
+
+paddock 2.x built and ran a container imperatively, both named `paddock`,
+backed by volumes `paddock_home` and `paddock_ssh_host_keys`. Those volumes
+were never compose-managed, so they carry no compose labels — which is why
+paddock's compose file deliberately names its own volumes `agent_home` and
+`sshd_host_keys` rather than `home` and `ssh_host_keys`: the project-prefixed
+names it creates (`paddock_agent_home`, `paddock_sshd_host_keys`) don't
+collide with the 2.x ones. Had the names matched, compose would have refused
+to start against them — it errors on a pre-existing volume that isn't
+labeled as its own rather than silently adopting it, unless you mark it
+`external: true`. So there's no override needed here: paddock starts clean
+alongside the old volumes, and once you've salvaged anything worth keeping,
+remove them directly:
+
+```sh
+docker rm -f paddock
+docker volume rm paddock_home paddock_ssh_host_keys
+```
+
+**Both commands are destructive** — `docker rm -f` discards the container
+(the image `paddock` is left behind; remove it separately with `docker rmi
+paddock` if you want) and `docker volume rm` deletes the volume data for
+good. Copy anything worth keeping out first, e.g.:
+
+```sh
+mkdir -p ~/paddock-home-backup
+docker run --rm -v paddock_home:/old -v ~/paddock-home-backup:/backup \
+  alpine cp -a /old/. /backup/
+```
+
+### Running both at once
+
+If an old stack (either one) is still listening on port 2222 and you're not
+ready to remove it yet, give paddock its own port for the transition:
+
+```sh
+PADDOCK_SSH_PORT=2223 paddock
+```
+
+or set it in `~/.config/paddock/.env` so it applies to every invocation
+without having to repeat it.
+
 ## Development
 
 The project is managed with [uv](https://docs.astral.sh/uv/):
