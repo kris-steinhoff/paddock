@@ -1,7 +1,4 @@
-"""The paddock CLI: build, start, stop, restart, and remove the agent container.
-
-Uses herdr to attach to a general-purpose agent container.
-"""
+"""The paddock CLI: build, start, stop, restart, and remove the agent container."""
 
 from __future__ import annotations
 
@@ -11,11 +8,11 @@ from typing import NoReturn
 
 import typer
 
-from . import config, container, paths, ssh
+from . import config, container, paths
 
 app = typer.Typer(add_completion=False, help=__doc__)
 
-REQUIRED_EXECUTABLES = ["docker", "herdr", "ssh-keygen"]
+REQUIRED_EXECUTABLES = ["docker"]
 
 
 def _version_callback(value: bool) -> None:
@@ -37,7 +34,7 @@ def _check_dependencies() -> None:
 
 def _load_settings() -> config.Settings:
     try:
-        return config.load_settings(paths.settings_path())
+        return config.load_settings(paths.config_dir() / "settings.yaml")
     except config.ConfigError as exc:
         _fail(str(exc))
 
@@ -57,10 +54,7 @@ def _build() -> None:
 def _start() -> None:
     if not container.image_exists():
         _build()
-    try:
-        authorized_keys = ssh.ensure_keypair()
-    except ssh.SshError as exc:
-        _fail(str(exc))
+    authorized_keys = paths.authorized_keys_path()
     settings = _load_settings()
     try:
         env = config.resolve_environment(settings)
@@ -88,7 +82,7 @@ def main(
         help="Show the paddock version and exit.",
     ),
 ) -> None:
-    """Uses herdr to attach to a general-purpose agent container."""
+    """Build, start, stop, restart, or remove the paddock container."""
     flags = {
         "--build": build,
         "--remove": remove,
@@ -135,4 +129,3 @@ def main(
     # in settings.yaml reach the container, via container.set_environment,
     # without restarting it and killing whatever's running inside.
     _start()
-    ssh.attach(container.PORT)

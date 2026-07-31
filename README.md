@@ -38,7 +38,7 @@ attaches. To rebuild and reattach: `paddock --build && paddock`.
 ## SSH
 
 paddock generates its own dedicated ed25519 keypair on first use, under
-`${XDG_STATE_HOME:-~/.local/state}/paddock/ssh_home/.ssh/`. The public key is
+`${XDG_CONFIG_HOME:-~/.config}/paddock/ssh_home/.ssh/`. The public key is
 mounted into the container as its `authorized_keys`; nothing is added to
 your own `~/.ssh`.
 
@@ -133,6 +133,54 @@ baked into the image, not read at container start). This only covers CA
 trust — if your network also requires an `HTTP_PROXY`/`HTTPS_PROXY` to reach
 the network *during the build itself*, that's not wired up yet (proxy env
 vars for the running container can already go in `environment` above).
+
+## docker-compose.yml
+
+The image ships with a `docker-compose.yml`, at
+`src/paddock/image/docker-compose.yml` inside the installed package. Since
+that file lives read-only in site-packages, every path or port that would
+normally be hand-edited is instead an environment variable:
+
+- `PADDOCK_SSH_PORT` (default `2222`) and `PADDOCK_HTTP_PORT` (default
+  `8000`) — published host ports.
+- `PADDOCK_TOOLS_REFRESH` (default `0`) — the `TOOLS_REFRESH` build arg; set
+  to a fresh value to bypass the Dockerfile's cache gate for `claude`,
+  `copilot`, `codex`, and `herdr`.
+- `PADDOCK_CA_CONTEXT` (default `./ca-certificates`, the empty directory
+  packaged alongside the compose file) — the `ca-certificates` named build
+  context; see [Corporate CA certificates](#corporate-ca-certificates).
+- `PADDOCK_AUTHORIZED_KEYS` — path to the public key mounted in as
+  `authorized_keys`. Has no default; it must be set for every invocation.
+
+paddock sets these for you: `PADDOCK_AUTHORIZED_KEYS` always, `PADDOCK_CA_CONTEXT`
+only when `~/.config/paddock/certs/` holds at least one `*.crt`, and
+`PADDOCK_TOOLS_REFRESH` only on an explicit rebuild-with-refresh — otherwise
+they're left for the compose file's own defaults or your shell to supply.
+
+These variables can also be set in your shell, or in a `.env` file at
+`~/.config/paddock/.env`, which paddock passes to compose via `--env-file`
+when present. Note that `--env-file` only feeds *interpolation* — the
+`${VAR:-default}` substitutions inside the compose file, like the ports
+above — it is not a way to inject arbitrary environment variables into the
+container itself. Container environment belongs in the compose file's
+`environment:`/`env_file:` keys, which is what a per-machine override file is
+for: bind-mounting a project into the container, most commonly, layered on
+top with a second `-f` rather than editing the packaged file:
+
+```yaml
+# ~/.config/paddock/docker-compose.override.yml
+services:
+  agent:
+    volumes:
+      - ~/code/github.com/kris-steinhoff/some-project:/home/agent/workspace/some-project
+    environment:
+      - EXTRA_TOKEN
+```
+
+```sh
+docker compose -f src/paddock/image/docker-compose.yml \
+  -f ~/.config/paddock/docker-compose.override.yml up -d
+```
 
 ## Development
 

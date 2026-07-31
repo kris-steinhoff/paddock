@@ -89,7 +89,7 @@ def set_environment(env: dict[str, str]) -> None:
 
     sshd (with ``PermitUserEnvironment yes``, see ``sshd_config``) reads that
     file fresh for every new session, so this is how ``settings.yaml``
-    env changes reach the container: on the *next* shell/herdr session, not
+    env changes reach the container: on the *next* shell/session, not
     by rebuilding or restarting the container, which would kill anything
     already running inside it. Lives on the ``paddock_home`` volume, so it
     also survives container recreation.
