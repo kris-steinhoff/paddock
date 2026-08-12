@@ -16,11 +16,15 @@ RUN apt-get update \
         fd-find \
         bat \
         fzf \
+        jq \
         less \
         unzip \
         xz-utils \
         build-essential \
+        bubblewrap \
         python3 \
+        python3-venv \
+        python3-pip \
         locales \
         tini \
     && rm -rf /var/lib/apt/lists/* \
@@ -31,10 +35,11 @@ RUN apt-get update \
 ENV LANG=en_US.UTF-8
 
 # Trust any extra CA(s) (e.g. a corporate TLS-intercepting proxy) before any
-# other networked step below. ca-certificates/ always exists in the build
-# context (empty if no ca_certificates are configured), so this COPY never
-# fails for lack of a source.
-COPY ca-certificates/ /usr/local/share/ca-certificates/paddock/
+# other networked step below. ca-certificates is a named build context (see
+# docker-compose.yml's additional_contexts), defaulting to a ./ca-certificates
+# dir shipped empty in the package, so this COPY never fails for lack of a
+# source.
+COPY --from=ca-certificates . /usr/local/share/ca-certificates/paddock/
 RUN update-ca-certificates
 # System trust store covers apt/curl/git/gh/glab/uv, but Node (and so npm,
 # claude, opencode) and some Python tooling ship their own bundles and ignore
@@ -56,14 +61,26 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Unlike gh, glab has no official apt repo and isn't packaged in Debian, so
-# resolve the latest tag via GitLab's API and pull the release tarball directly.
+# GitLab's glab isn't in Debian/apt either. It ships pre-built release tarballs
+# on gitlab.com; resolve the latest tag via the API and pull the matching arch
+# binary (bin/glab inside the tarball). uname -m for the same reason as nvim below.
 RUN arch=$(case "$(uname -m)" in aarch64) echo arm64 ;; *) echo amd64 ;; esac) \
-    && version=$(curl -fsSL https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases/permalink/latest | grep -oP '"tag_name":\s*"\K[^"]+') \
-    && curl -fsSLo /tmp/glab.tar.gz "https://gitlab.com/gitlab-org/cli/-/releases/${version}/downloads/glab_${version#v}_linux_${arch}.tar.gz" \
-    && tar -C /tmp -xzf /tmp/glab.tar.gz bin/glab \
+    && tag=$(curl -fsSL "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases/permalink/latest" | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4) \
+    && ver=${tag#v} \
+    && curl -fsSLo /tmp/glab.tar.gz "https://gitlab.com/gitlab-org/cli/-/releases/${tag}/downloads/glab_${ver}_linux_${arch}.tar.gz" \
+    && tar -C /tmp -xzf /tmp/glab.tar.gz \
     && mv /tmp/bin/glab /usr/local/bin/glab \
     && rm -rf /tmp/glab.tar.gz /tmp/bin
+
+# Terraform isn't in Debian/apt, and HashiCorp's apt repo doesn't reliably carry
+# a trixie release. HashiCorp ships per-version zip binaries; resolve the latest
+# stable via the checkpoint API and pull the matching arch (single `terraform`
+# binary inside the zip). uname -m for the same reason as nvim below.
+RUN arch=$(case "$(uname -m)" in aarch64) echo arm64 ;; *) echo amd64 ;; esac) \
+    && ver=$(curl -fsSL https://checkpoint-api.hashicorp.com/v1/check/terraform | grep -o '"current_version":"[^"]*"' | head -1 | cut -d'"' -f4) \
+    && curl -fsSLo /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${ver}/terraform_${ver}_linux_${arch}.zip" \
+    && unzip -d /usr/local/bin /tmp/terraform.zip \
+    && rm /tmp/terraform.zip
 
 # Neovim's Debian/apt build lags releases by a lot; the dotfiles' lazy-lock.json
 # and treesitter setup expect a current release, so pull the GitHub binary.
@@ -80,7 +97,9 @@ RUN BINDIR=/usr/local/bin sh -c "$(curl -fsLS get.chezmoi.io)"
 
 RUN curl -fsSL https://starship.rs/install.sh | sh -s -- --yes
 
-RUN npm install -g @anthropic-ai/claude-code opencode-ai tree-sitter-cli \
+# Cached tools: kept above the cache gate near the bottom. The fast-moving
+# ones (claude, copilot, codex) install below the gate so they track latest.
+RUN npm install -g opencode-ai tree-sitter-cli \
     && npm cache clean --force
 
 RUN useradd -m -s /usr/bin/zsh agent \
@@ -100,12 +119,13 @@ COPY sshd_config /etc/paddock/sshd_config
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 755 /usr/local/bin/entrypoint.sh
 
-# herdr installs into the invoking user's home dir, and chezmoi apply runs
-# run_once_bootstrap.sh (which skips the brew step here since brew isn't
-# installed) to lay down dotfiles and pre-fetch the pinned nvim plugins.
+# chezmoi apply runs run_once_bootstrap.sh (which skips the brew step here
+# since brew isn't installed) to lay down dotfiles and pre-fetch the pinned
+# nvim plugins. Kept above the cache gate so that expensive plugin pre-fetch
+# stays cached. It lays down herdr's config too; herdr itself installs below
+# the gate and doesn't need to exist yet for the config to be written.
 USER agent
 WORKDIR /home/agent
-RUN curl -fsSL https://herdr.dev/install.sh | sh
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/home/agent/.local/bin:${PATH}"
 # Debian's zsh package seeds a skeleton ~/.zshrc via /etc/skel, which makes
@@ -114,6 +134,31 @@ ENV PATH="/home/agent/.local/bin:${PATH}"
 RUN rm -f /home/agent/.zshrc
 RUN chezmoi init --apply kris-steinhoff/dotfiles
 
+# ---------------------------------------------------------------------------
+# Cache gate. Everything ABOVE stays cached across rebuilds; everything BELOW
+# reinstalls whenever the TOOLS_REFRESH build arg changes. Docker only
+# cache-misses an ARG on its first *use* (not its declaration), so the echo
+# below is the real gate — it and every layer under it rebuild when the value
+# changes. docker-compose.yml forwards PADDOCK_TOOLS_REFRESH here, which
+# paddock sets to a fresh timestamp on `paddock build` / `paddock up --build`
+# so these fast-moving tools track latest; left unset it defaults to 0 and
+# the cached layers are reused (`--cached` pins it that way).
+# ---------------------------------------------------------------------------
+ARG TOOLS_REFRESH=0
+RUN echo "tools refresh token: ${TOOLS_REFRESH}"
+
+# herdr installs into the invoking user's home dir.
+RUN curl -fsSL https://herdr.dev/install.sh | sh
+
 USER root
+RUN npm install -g @anthropic-ai/claude-code @github/copilot @openai/codex \
+    && npm cache clean --force
+
+# Beads (bd): AI-supervised issue tracker CLI. No apt/npm package; the
+# installer resolves the latest release itself, so keep it below the cache
+# gate to track new versions. It installs to /usr/local/bin since that's
+# root-writable here.
+RUN curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
+
 EXPOSE 22
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
