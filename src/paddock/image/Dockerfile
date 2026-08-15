@@ -185,5 +185,14 @@ RUN npm install -g @anthropic-ai/claude-code @github/copilot @openai/codex \
 # root-writable here.
 RUN curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
 
+# Land on agent, not root. `docker exec` (and so `paddock -- exec agent zsh`)
+# uses the image's USER, and a root shell in /home/agent quietly writes
+# root-owned files into the persistent agent_home volume, which the agent user
+# then can't overwrite. sshd is unaffected either way, since it drops to agent
+# on login. The privileged setup sshd needs (/run/sshd, ssh-keygen -A into the
+# /etc/ssh volume, chowning authorized_keys, binding port 22) is why
+# entrypoint.sh sudos those steps rather than this staying USER root.
+USER agent
+
 EXPOSE 22
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]

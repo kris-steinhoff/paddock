@@ -4,12 +4,18 @@
 # no Docker daemon access, so this can't run there — run it on a host that can
 # reach one (e.g. the Colima host on macOS) with `docker compose` (v2) on PATH.
 #
-# Checks all three acceptance criteria from paddock-aye.3:
+# Checks:
 #   1. sshd_config.d/paddock.conf is present and current after an image
 #      rebuild against a pre-existing sshd_host_keys volume seeded with a
 #      stale config (proves the volume's stale content doesn't shadow it).
 #   2. authorized_keys lands as agent:agent 0600.
 #   3. A key listed in the config-dir authorized_keys can log in.
+#   4. `docker compose exec` lands as agent, not root. The image's USER is
+#      agent so an exec'd shell can't write root-owned files into the
+#      persistent /home/agent volume.
+#   5. SIGTERM still reaches sshd, which the entrypoint's sudo hop could
+#      break: a container that ignores it sits out the full stop timeout
+#      before being SIGKILLed.
 #
 # Everything is scoped to an isolated compose project ("paddock-verify") and
 # an isolated image tag, so it never touches a real `paddock` container,
@@ -136,6 +142,30 @@ if login_out="$(ssh -i "$workdir/id_ed25519" \
     ok "ssh login succeeded with the mounted authorized_keys"
 else
     bad "ssh login failed: $login_out"
+fi
+
+echo "== criterion 4: compose exec lands as agent, not root =="
+if exec_user="$(compose exec -T agent id -un 2>&1)"; then
+    if [ "$exec_user" = agent ]; then
+        ok "compose exec runs as agent (no root-owned writes into /home/agent)"
+    else
+        bad "compose exec runs as '$exec_user', expected 'agent'"
+    fi
+else
+    bad "could not resolve the compose exec user: $exec_user"
+fi
+
+# Last, since it stops the container. The entrypoint runs as agent and reaches
+# sshd through `sudo`, so this is where a broken signal chain would show up:
+# sshd never sees SIGTERM and compose waits out the full timeout, then SIGKILLs.
+echo "== criterion 5: SIGTERM reaches sshd through tini and sudo =="
+stop_started=$(date +%s)
+compose stop -t 10 >/dev/null 2>&1 || true
+stop_elapsed=$(($(date +%s) - stop_started))
+if [ "$stop_elapsed" -lt 8 ]; then
+    ok "container stopped in ${stop_elapsed}s (SIGTERM propagated to sshd)"
+else
+    bad "container took ${stop_elapsed}s to stop; SIGTERM likely never reached sshd"
 fi
 
 echo
