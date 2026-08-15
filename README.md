@@ -1,14 +1,23 @@
 # paddock
 
-Build, start, stop, and remove a single general-purpose development
-container, and attach to it with [herdr](https://herdr.dev). One Dockerfile
-ships with paddock itself (no per-repo image to author) — the same
-container every time, mirroring the pattern in
-[agent-container](https://github.com/kris-steinhoff/agent-container) but
-orchestrated directly by paddock instead of docker-compose.
+Build and run a single general-purpose development container via
+[docker compose](https://docs.docker.com/compose/), and nothing else. One
+Dockerfile and one compose file ship baked into the paddock package itself,
+so there's no per-repo image or config tree to author. paddock's whole job
+is to assemble the right `docker compose` invocation (packaged base file,
+your optional per-machine override, the `PADDOCK_*` interpolation
+variables) and get out of the way.
 
-Ships: `claude`, `opencode`, `neovim`, `gh`, `glab`, `uv`, `chezmoi`, and
-`sshd` so herdr can attach to a persistent session inside the container.
+paddock does not attach you to the container. Connecting is your own
+business. The image ships [herdr](https://herdr.dev) and `sshd`, so
+`herdr --remote ssh://agent@localhost:2222` is the intended path, but
+paddock never runs it, generates no keys, and does not touch your ssh
+config.
+
+Ships: `claude`, `codex`, `copilot`, `opencode`, `herdr`, `bd`, `neovim`,
+`gh`, `glab`, `terraform`, `uv`, `chezmoi`, `starship`, and `sshd`, on top
+of a `node:24-trixie-slim` base with the usual shell tooling (`zsh`,
+`ripgrep`, `fd`, `bat`, `fzf`, `jq`, `direnv`, `git`, `python3`).
 
 ## Install
 
@@ -19,175 +28,223 @@ uv tool install git+https://github.com/kris-steinhoff/paddock
 paddock --help
 ```
 
-Requires `docker` and `herdr` installed and on `PATH`.
+Requires `docker` with the `compose` plugin (`docker compose version`
+should work) on `PATH`. paddock shells out to `docker compose` directly and
+doesn't vendor or install docker itself. Nothing is checked up front: a
+missing `docker` surfaces as `error: docker executable not found on PATH`
+from the first command that needs it.
 
 ## Usage
 
 ```sh
-paddock            # build if needed, start if needed, attach with herdr
-paddock --build    # (re)build the image
-paddock --start     # create/start the container without attaching
-paddock --stop      # stop the container
-paddock --restart   # restart the container
-paddock --remove    # stop and remove the container and image (volumes are kept)
+paddock build [--cached] [--no-cache]   # build the image
+paddock up [--build] [--cached]         # start the container in the background
+paddock down [--volumes]                # stop and remove the container
+paddock start                           # start a stopped container
+paddock stop                            # stop the container
+paddock restart                         # restart the container
+paddock status                          # container status plus the resolved ssh port
+paddock logs [-f]                       # container logs
+paddock compose -- <args>               # passthrough, e.g. `paddock compose -- exec agent zsh`
 ```
 
-The flags are standalone actions and mutually exclusive; only bare `paddock`
-attaches. To rebuild and reattach: `paddock --build && paddock`.
+Bare `paddock` prints help and exits 0. There is no default action, and no
+subcommand attaches you to anything. `down` removes volumes only with
+`--volumes`, since that destroys `agent_home` (see
+[Persistence](#persistence)).
 
-## SSH
+`paddock compose -- <args>` is the escape hatch: it execs `docker compose`
+with the same `-f`/`--env-file` assembly and the same `PADDOCK_*`
+environment paddock would use itself, followed by whatever you put after
+the `--`. Anything paddock doesn't wrap (`exec`, `config`, `cp`, `top`) is
+reachable that way without hand-assembling the file list.
 
-paddock generates its own dedicated ed25519 keypair on first use, under
-`${XDG_CONFIG_HOME:-~/.config}/paddock/ssh_home/.ssh/`. The public key is
-mounted into the container as its `authorized_keys`; nothing is added to
-your own `~/.ssh`.
+## Connecting
 
-Attaching runs `herdr --remote ssh://agent@localhost:2223` with `HOME`
-pointed at that same directory for just that one subprocess call, so herdr's
-managed ssh config, known_hosts, and identity file resolution are all scoped
-to paddock's own directory instead of your real `~/.ssh/config`.
+Once `paddock up` is running, connect however you like. The intended path
+is [herdr](https://herdr.dev), which the image ships:
 
-## Persistence
+```sh
+herdr --remote ssh://agent@localhost:2222
+```
 
-Two named docker volumes persist across `--stop`/`--restart` and container
-recreation:
+Plain `ssh agent@localhost -p 2222` works the same way, as does anything
+else that speaks ssh. The container's sshd allows only the `agent` user and
+only public-key auth (no passwords, no root login), and the port is
+published on `127.0.0.1` only. `paddock status` prints the port it resolves
+if you've changed it.
 
-- `paddock_home` → `/home/agent` — dotfiles, shell history, tool auth
-  (`claude`, `gh`, etc.)
-- `paddock_ssh_host_keys` → `/etc/ssh` — sshd's host keys, so rebuilding the
-  image doesn't change the container's host key and trip
-  `StrictHostKeyChecking`
+For a shell without ssh at all, use the passthrough:
 
-`paddock --remove` removes the container and image but leaves both volumes
-in place. Delete them yourself with `docker volume rm paddock_home
-paddock_ssh_host_keys` if you want a truly clean slate.
-
-## Credentials
-
-Not baked into the image. Either:
-
-- Run `claude` / `opencode` / `gh auth login` inside the container once and
-  complete the normal interactive login, which persists in the
-  `paddock_home` volume, or
-- Set environment variables in `settings.yaml` (see below), picked up by
-  every new shell/session without needing a container restart.
+```sh
+paddock compose -- exec agent zsh
+```
 
 ## Configuration
 
-A single optional file:
-`${XDG_CONFIG_HOME:-~/.config}/paddock/settings.yaml`.
+Everything lives under `${XDG_CONFIG_HOME:-~/.config}/paddock`. Every file
+in it is optional to paddock, but without `authorized_keys` you can't ssh
+in:
 
-```yaml
-environment:
-  ANTHROPIC_API_KEY: "sk-..."
-  GITLAB_PAT:
-    command: op read op://Private/Gitlab-PAT/token
-```
+- **`authorized_keys`**: public keys allowed to ssh in, in standard
+  `authorized_keys` format. paddock always sets `PADDOCK_AUTHORIZED_KEYS`
+  to this path and the compose file mounts it read-only into the container,
+  where the entrypoint copies it to `/home/agent/.ssh/authorized_keys` with
+  the ownership and mode sshd's `StrictModes` demands. Nothing validates it
+  up front, so a missing file is not an error you'll see from paddock. The
+  symptom is a container that starts fine and refuses every key. Populate
+  it the normal way, or pull the public half straight out of your
+  ssh-agent:
 
-Each member names an environment variable. A string value is used directly.
-A hash value must have a `command` key, run via `sh -c`; its stdout (trailing
-newline stripped) becomes the value. Since the command runs through a shell,
-you can pipe to extract a single value:
+  ```sh
+  ssh-add -L >> ~/.config/paddock/authorized_keys
+  ```
 
-```yaml
-environment:
-  AWS_SESSION_TOKEN:
-    command: aws configure export-credentials | jq -r .SessionToken
-```
+- **`certs/*.crt`**: root CA certificates to trust in the image (e.g. a
+  corporate TLS-intercepting proxy). Any `*.crt` file here makes paddock
+  point `PADDOCK_CA_CONTEXT` at this directory for the build. With none
+  present the variable is left unset and the compose file falls back to the
+  empty `ca-certificates/` directory packaged alongside it, so the build
+  never fails for lack of a source. See [Corporate CA
+  certificates](#corporate-ca-certificates).
 
-Every `paddock` invocation re-resolves this list and writes it to the
-container's `~/.ssh/environment` (readable by sshd only, on the persistent
-`paddock_home` volume), so edits take effect for the next new shell/session
-without restarting the container or disturbing anything already running
-inside it.
+- **`docker-compose.override.yml`**: a per-machine compose file layered on
+  top of the packaged one with a second `-f`, so its values win. This is
+  where bind mounts, extra published ports, and extra container environment
+  go, since the packaged compose file is read-only inside site-packages.
 
-### Corporate CA certificates
+  ```yaml
+  # ~/.config/paddock/docker-compose.override.yml
+  services:
+    agent:
+      volumes:
+        - ~/code/github.com/kris-steinhoff/some-project:/home/agent/workspace/some-project
+      environment:
+        - EXTRA_TOKEN
+  ```
 
-If your network runs a TLS-intercepting proxy, list its root CA(s) under
-`ca_certificates`:
+- **`.env`**: passed to `docker compose` as `--env-file` when present, for
+  setting the `PADDOCK_*` interpolation variables below without exporting
+  them in every shell. It feeds interpolation only (see [Env vars and
+  secrets](#env-vars-and-secrets)).
 
-```yaml
-ca_certificates:
-  - ~/corp/proxy-ca.pem
-```
+## PADDOCK_* variables
 
-Paths are expanded (`~` works) and must exist — `paddock --build` fails fast
-with a clear error otherwise, rather than deep inside a docker build. Each
-listed certificate is copied into the build context and trusted via
-`update-ca-certificates` right after the base image's first `apt-get install`
-(which is what provides the `ca-certificates`/`update-ca-certificates` tooling
-in the first place — that one step is unavoidably not covered, so it needs to
-reach the network without the corporate CA already trusted, e.g. over a
-network path the proxy doesn't intercept), and before every other networked
-step in the Dockerfile (curl/npm/further apt). This covers both the image
-build from that point on and everything the running container does
-afterward — the built image already carries the trust, no runtime mount
-needed. Node-based tools (`claude`, `opencode`, `npm`) and some Python
-tooling ignore the system trust store by default, so the image also pins
+The packaged compose file reads these for interpolation, i.e. the
+`${VAR:-default}` substitutions inside the file. All of them can be set in
+your shell or in the config dir's `.env`. paddock sets only the ones marked
+below, and never overwrites a value you set yourself.
+
+| Variable | Default | Used for | Set by paddock? |
+| --- | --- | --- | --- |
+| `PADDOCK_SSH_PORT` | `2222` | published host ssh port (bound to `127.0.0.1`) | no, pass-through only |
+| `PADDOCK_HTTP_PORT` | `8000` | published host http port (bound to `127.0.0.1`) | no, pass-through only |
+| `PADDOCK_AUTHORIZED_KEYS` | none | mounted read-only as the container's `authorized_keys` source | yes, always |
+| `PADDOCK_CA_CONTEXT` | `./ca-certificates` (packaged empty dir) | the `ca-certificates` named build context | yes, when `certs/` holds at least one `*.crt` |
+| `PADDOCK_TOOLS_REFRESH` | `0` | the Dockerfile's `TOOLS_REFRESH` cache gate | yes, on `build` and `up --build` unless `--cached` |
+
+`paddock status` resolves `PADDOCK_SSH_PORT` itself to print the port you'd
+connect on, mirroring compose's own precedence: shell environment first,
+then the config dir's `.env`, then the packaged default.
+
+## Env vars and secrets
+
+paddock resolves no secrets on your behalf. There is no `settings.yaml`,
+and no `{command: ...}` indirection like paddock 2.x had. An environment
+variable can reach the container from exactly three places:
+
+1. **Your shell**, for anything that shouldn't touch disk:
+
+   ```sh
+   GITHUB_TOKEN=$(op read op://Private/GitHub/token) paddock up
+   ```
+
+   The packaged compose file lists a few valueless pass-through entries
+   (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `ANTHROPIC_API_KEY`) that pick up
+   whatever is in your environment when paddock runs compose.
+
+2. **`docker-compose.override.yml`**, for any other variable name. Add it
+   as a pass-through entry the same way the packaged file does, then run
+   `EXTRA_TOKEN=... paddock up`, or give it a literal value in the override
+   if you don't mind it on disk.
+
+3. **A tool's own login inside the container**, e.g. `gh auth login` or
+   `claude`. That state lands in `/home/agent` and persists in the
+   `agent_home` volume, so it survives restarts and rebuilds.
+
+**`--env-file` is not the fourth place.** `docker compose --env-file`
+(which paddock passes whenever the config dir's `.env` exists) feeds
+compose *interpolation* only, meaning the `${VAR:-default}` substitutions
+inside the compose file itself, like the ports and `PADDOCK_TOOLS_REFRESH`
+above. It cannot inject an arbitrary variable into the container. Container
+environment comes only from the compose file's `environment:`/`env_file:`
+keys, which is why route 2 needs an override entry rather than a new line
+in `.env`.
+
+## Persistence
+
+Two named docker volumes, both prefixed by the compose project name
+(`name: paddock` in the packaged file):
+
+- `paddock_agent_home` maps to `/home/agent`: dotfiles, shell history, tool
+  auth (`claude`, `gh`, and friends).
+- `paddock_sshd_host_keys` maps to `/etc/ssh`: sshd's host keys, so
+  rebuilding the image doesn't change the container's host key and trip
+  `StrictHostKeyChecking`.
+
+Both survive `stop`, `start`, `restart`, a plain `down`, and a rebuild.
+**`paddock down --volumes` is the destructive one.** It forwards `-v` to
+compose and deletes both volumes for good, tool auth and shell history
+included.
+
+## The tools cache gate
+
+The Dockerfile is split by a cache gate. Everything above it (apt packages,
+`gh`, `glab`, `terraform`, `neovim`, `chezmoi`, `starship`, `opencode`, the
+dotfiles bootstrap with its expensive nvim plugin pre-fetch) stays cached
+across rebuilds. Everything below it (`herdr`, `claude`, `copilot`,
+`codex`, `bd`) reinstalls whenever the `TOOLS_REFRESH` build arg changes,
+so those fast-moving tools don't silently pin an old version forever.
+
+- `paddock build` and `paddock up --build` set a fresh
+  `PADDOCK_TOOLS_REFRESH` timestamp by default, busting the gate so those
+  tools reinstall latest.
+- `--cached` on either leaves the variable alone instead, so the compose
+  file's default of `0` applies and the cached layers are reused.
+
+`paddock build --no-cache` is the unrelated bigger hammer: it passes
+`--no-cache` through to `docker compose build`, rebuilding every layer.
+
+## Corporate CA certificates
+
+Drop the root CA(s) into `~/.config/paddock/certs/` as `*.crt` files and
+run `paddock build`. paddock points the `ca-certificates` build context at
+that directory, and the Dockerfile copies its contents into
+`/usr/local/share/ca-certificates/paddock/` and runs
+`update-ca-certificates` right after the base image's first `apt-get
+install`, which is what provides that tooling in the first place. That one
+step is unavoidably not covered, so it has to reach the network without the
+corporate CA already trusted. Every other networked step (curl, npm,
+further apt) runs after the trust is in place.
+
+Node-based tools (`claude`, `opencode`, `npm`) and some Python tooling
+ignore the system trust store by default, so the image also pins
 `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`,
 `CURL_CA_BUNDLE`, `PIP_CERT`, and `GIT_SSL_CAINFO` at the merged system
-bundle.
+bundle. The trust is baked into the image, so it covers the running
+container too with no runtime mount, and changing the certs needs a
+`paddock build` to take effect.
 
-Changing `ca_certificates` requires `paddock --build` to take effect (it's
-baked into the image, not read at container start). This only covers CA
-trust — if your network also requires an `HTTP_PROXY`/`HTTPS_PROXY` to reach
-the network *during the build itself*, that's not wired up yet (proxy env
-vars for the running container can already go in `environment` above).
-
-## docker-compose.yml
-
-The image ships with a `docker-compose.yml`, at
-`src/paddock/image/docker-compose.yml` inside the installed package. Since
-that file lives read-only in site-packages, every path or port that would
-normally be hand-edited is instead an environment variable:
-
-- `PADDOCK_SSH_PORT` (default `2222`) and `PADDOCK_HTTP_PORT` (default
-  `8000`) — published host ports.
-- `PADDOCK_TOOLS_REFRESH` (default `0`) — the `TOOLS_REFRESH` build arg; set
-  to a fresh value to bypass the Dockerfile's cache gate for `claude`,
-  `copilot`, `codex`, and `herdr`.
-- `PADDOCK_CA_CONTEXT` (default `./ca-certificates`, the empty directory
-  packaged alongside the compose file) — the `ca-certificates` named build
-  context; see [Corporate CA certificates](#corporate-ca-certificates).
-- `PADDOCK_AUTHORIZED_KEYS` — path to the public key mounted in as
-  `authorized_keys`. Has no default; it must be set for every invocation.
-
-paddock sets these for you: `PADDOCK_AUTHORIZED_KEYS` always, `PADDOCK_CA_CONTEXT`
-only when `~/.config/paddock/certs/` holds at least one `*.crt`, and
-`PADDOCK_TOOLS_REFRESH` only on an explicit rebuild-with-refresh — otherwise
-they're left for the compose file's own defaults or your shell to supply.
-
-These variables can also be set in your shell, or in a `.env` file at
-`~/.config/paddock/.env`, which paddock passes to compose via `--env-file`
-when present. Note that `--env-file` only feeds *interpolation* — the
-`${VAR:-default}` substitutions inside the compose file, like the ports
-above — it is not a way to inject arbitrary environment variables into the
-container itself. Container environment belongs in the compose file's
-`environment:`/`env_file:` keys, which is what a per-machine override file is
-for: bind-mounting a project into the container, most commonly, layered on
-top with a second `-f` rather than editing the packaged file:
-
-```yaml
-# ~/.config/paddock/docker-compose.override.yml
-services:
-  agent:
-    volumes:
-      - ~/code/github.com/kris-steinhoff/some-project:/home/agent/workspace/some-project
-    environment:
-      - EXTRA_TOKEN
-```
-
-```sh
-docker compose -f src/paddock/image/docker-compose.yml \
-  -f ~/.config/paddock/docker-compose.override.yml up -d
-```
+This covers CA trust only. If your network also needs an
+`HTTP_PROXY`/`HTTPS_PROXY` to reach anything *during the build itself*,
+that isn't wired up.
 
 ## Migrating from an older setup
 
 paddock has gone through two earlier shapes: agent-container (a separate,
 per-repo compose project) and paddock 2.x (this same project, but driving
-`docker build`/`docker run` directly instead of compose). Both left behind a
-container, an image, and — the part worth being careful with — a home
+`docker build`/`docker run` directly instead of compose). Both left behind
+a container, an image, and, the part worth being careful with, a home
 volume full of tool auth and shell history. The risk in either migration is
 losing that volume by forgetting about it.
 
@@ -197,7 +254,7 @@ agent-container's compose project was named `agent-container`, so its
 volumes are `agent-container_agent_home` and `agent-container_ssh_host_keys`.
 Reuse the home volume instead of starting paddock with an empty one, by
 declaring paddock's own `agent_home` volume as external and pointing it at
-the old name — the same override file used for bind mounts and extra
+the old name, in the same override file used for bind mounts and extra
 environment above:
 
 ```yaml
@@ -209,13 +266,12 @@ volumes:
 ```
 
 ```sh
-docker compose -f src/paddock/image/docker-compose.yml \
-  -f ~/.config/paddock/docker-compose.override.yml up -d
+paddock up
 ```
 
 paddock now starts against the migrated volume instead of creating a fresh
 `paddock_agent_home`. Don't bother doing the same for
-`agent-container_ssh_host_keys`: host keys are cheap to regenerate (one
+`agent-container_ssh_host_keys`. Host keys are cheap to regenerate (one
 `StrictHostKeyChecking` prompt on your next connection) and paddock's
 compose file already provisions its own `sshd_host_keys` volume, so nothing
 is gained by carrying the old one forward.
@@ -228,15 +284,16 @@ docker compose -p agent-container down
 ```
 
 **Do not add `-v` to that command.** `down -v` also deletes the stack's
-volumes, including the `agent-container_agent_home` volume you just adopted.
+volumes, including the `agent-container_agent_home` volume you just
+adopted.
 
 If your `~/.ssh/config` has the line agent-container's README told you to
-add — something like `Include ~/.config/agent-container/ssh_config` — remove
-it or repoint it. paddock doesn't ship or generate an `ssh_config` file of
-its own to include; connecting is your own business (see [SSH](#ssh)). A
-leftover `Include` pointing at a file that no longer exists is a silent ssh
-config error rather than a loud one, so replace it with a hand-written host
-block instead:
+add, something like `Include ~/.config/agent-container/ssh_config`, remove
+it or repoint it. paddock ships and generates no `ssh_config` of its own to
+include, since connecting is your own business (see
+[Connecting](#connecting)). A leftover `Include` pointing at a file that no
+longer exists is a silent ssh config error rather than a loud one, so
+replace it with a hand-written host block instead:
 
 ```
 Host paddock
@@ -250,24 +307,24 @@ Host paddock
 
 paddock 2.x built and ran a container imperatively, both named `paddock`,
 backed by volumes `paddock_home` and `paddock_ssh_host_keys`. Those volumes
-were never compose-managed, so they carry no compose labels — which is why
+were never compose-managed, so they carry no compose labels, which is why
 paddock's compose file deliberately names its own volumes `agent_home` and
-`sshd_host_keys` rather than `home` and `ssh_host_keys`: the project-prefixed
-names it creates (`paddock_agent_home`, `paddock_sshd_host_keys`) don't
-collide with the 2.x ones. Had the names matched, compose would have refused
-to start against them — it errors on a pre-existing volume that isn't
-labeled as its own rather than silently adopting it, unless you mark it
-`external: true`. So there's no override needed here: paddock starts clean
-alongside the old volumes, and once you've salvaged anything worth keeping,
-remove them directly:
+`sshd_host_keys` rather than `home` and `ssh_host_keys`: the
+project-prefixed names it creates (`paddock_agent_home`,
+`paddock_sshd_host_keys`) don't collide with the 2.x ones. Had the names
+matched, compose would have refused to start against them, since it errors
+on a pre-existing volume that isn't labeled as its own rather than silently
+adopting it, unless you mark it `external: true`. So there's no override
+needed here. paddock starts clean alongside the old volumes, and once
+you've salvaged anything worth keeping, remove them directly:
 
 ```sh
 docker rm -f paddock
 docker volume rm paddock_home paddock_ssh_host_keys
 ```
 
-**Both commands are destructive** — `docker rm -f` discards the container
-(the image `paddock` is left behind; remove it separately with `docker rmi
+**Both commands are destructive.** `docker rm -f` discards the container
+(the image `paddock` is left behind, remove it separately with `docker rmi
 paddock` if you want) and `docker volume rm` deletes the volume data for
 good. Copy anything worth keeping out first, e.g.:
 
@@ -277,13 +334,18 @@ docker run --rm -v paddock_home:/old -v ~/paddock-home-backup:/backup \
   alpine cp -a /old/. /backup/
 ```
 
+Paddock 2.x's `settings.yaml` has no equivalent. Environment values move to
+your shell or an override file (see [Env vars and
+secrets](#env-vars-and-secrets)), and `ca_certificates:` entries become
+`*.crt` files in `~/.config/paddock/certs/`.
+
 ### Running both at once
 
 If an old stack (either one) is still listening on port 2222 and you're not
 ready to remove it yet, give paddock its own port for the transition:
 
 ```sh
-PADDOCK_SSH_PORT=2223 paddock
+PADDOCK_SSH_PORT=2223 paddock up
 ```
 
 or set it in `~/.config/paddock/.env` so it applies to every invocation
@@ -301,3 +363,23 @@ uv run ruff check .           # lint
 uv run ty check               # type check
 uv run pytest                 # test
 ```
+
+`pytest` covers pure logic only (argv and interpolation-env assembly, path
+helpers, CLI wiring) and never talks to a docker daemon. Two scripts cover
+the container side, both smoke tests of the entrypoint's `/etc/ssh`
+named-volume workaround (a stale volume must not shadow the image's
+`sshd_config.d/paddock.conf`, and `authorized_keys` must land as
+`agent:agent 0600`):
+
+```sh
+scripts/verify-entrypoint.sh [ssh-port]        # needs a real Docker daemon
+scripts/verify-entrypoint-local.sh [ssh-port]  # no daemon needed
+```
+
+`verify-entrypoint.sh` runs the literal Dockerfile and compose build in an
+isolated compose project and image tag, so it never touches a real
+`paddock` container, image, or volume. It's the higher-fidelity check and
+the one to prefer on any host that can reach a daemon.
+`verify-entrypoint-local.sh` is the fallback for hosts without one (paddock's
+own dev container included): it replays the entrypoint's copy commands
+against a scratch tree and starts a real sshd against it.

@@ -1,4 +1,4 @@
-"""paddock: build, run, and remove a per-repo container with configured env injected."""
+"""paddock: drive a docker-compose-managed general-purpose development container."""
 
 from importlib.metadata import PackageNotFoundError, version
 
