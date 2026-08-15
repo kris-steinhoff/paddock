@@ -159,12 +159,12 @@ below, and never overwrites a value you set yourself.
 
 Since paddock no longer knows which compose verb you're running, it sets a
 fresh `PADDOCK_TOOLS_REFRESH` timestamp on *every* invocation rather than
-guessing at which ones are builds. That only changes what a build does, but
-compose folds build args into the config hash it stamps on the container,
-so a plain `paddock -- up` may recreate the container rather than reusing
-it. Both named volumes survive that (see [Persistence](#persistence)), so
-the cost is a few seconds and any in-container process state. Use
-`paddock --no-refresh -- up` to avoid it.
+guessing at which ones are builds. Only a build reads it, so this is inert
+everywhere else: a changed value does not make compose recreate a running
+container, since the built image is what the container's config hash is
+computed against. Two `paddock -- up -d` calls in a row report `Running`,
+not `Recreated`. `paddock --no-refresh -- build` is how you reuse the
+cached tool-install layer.
 
 ## Env vars and secrets
 

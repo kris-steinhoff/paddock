@@ -24,9 +24,7 @@ Retiring the agent-container repo (out of tree) is no longer tracked here; Kris 
 
 The per-verb subcommand CLI is gone. `paddock -- <args>` execs `docker compose` with paddock's file/env assembly and nothing else, paddock's own flags (`--init`, `--refresh`/`--no-refresh`, `--version`) go before the `--`, and the `--` is required. What prompted it: `paddock start` failed with compose's clear "no container to start" message plus a redundant paddock `error:` line under it, and `start` vs `up` was a distinction with no situation that justified it.
 
-Unverified against a real daemon (all of it passes locally and `paddock -- config` resolves correctly, but no container has been started with 4.0):
-
-- **Does `paddock -- up` actually recreate the container each time?** This is the accepted tradeoff of defaulting to `--refresh`: compose folds build args into the container config hash, so a fresh `PADDOCK_TOOLS_REFRESH` on every invocation may force recreation. If it turns out to recreate on every single `up`, reconsider whether the default should flip to `--no-refresh`.
+- ~~**Does `paddock -- up` recreate the container each time?**~~ Verified: no. The worry behind `--refresh`'s default was that compose folds build args into the container config hash, so a fresh `PADDOCK_TOOLS_REFRESH` every invocation would force recreation. Back-to-back `paddock -- up -d` calls report `Running`, not `Recreated` — the hash is computed against the built image, and an unchanged image means an unchanged hash regardless of the build arg. The refresh default is free, and `--no-refresh` only matters for reusing the cached tool-install layer on a `build`.
 
 ## Small fixes found during integration
 
