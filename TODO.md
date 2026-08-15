@@ -26,6 +26,5 @@ Retiring the agent-container repo (out of tree) is no longer tracked here; Kris 
 
 ## Repo housekeeping
 
-- **No git tags exist.** Consider tagging `9d18312` as `v3.0`.
-- **The `milhouse/*` branches are still around.** Their content reached `main` through curated commits rather than merges, so git's `--merged` only recognises three of them. The other five and their worktrees under `~/.herdr/worktrees/paddock/` can be deleted once nobody wants the history.
-- **The `.milhouse/runs/` directory is still present.** It holds run logs from the agent runs that produced the 3.0 rewrite. Delete it whenever those are no longer interesting.
+- ~~**No git tags exist.**~~ Done. Tagged `9d18312` as `v3.0` locally; push it with `git push origin v3.0` (the sandbox this was done from has no outbound network access).
+- **The `milhouse/*` branches and `.milhouse/runs/`** weren't present in this checkout (no `milhouse/*` branches, no `.milhouse` directory at all) — already cleaned up, or they only exist elsewhere. Nothing to do here unless they turn up on another machine.
