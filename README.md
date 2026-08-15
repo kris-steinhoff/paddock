@@ -15,9 +15,10 @@ paddock never runs it, generates no keys, and does not touch your ssh
 config.
 
 Ships: `claude`, `codex`, `copilot`, `opencode`, `herdr`, `bd`, `neovim`,
-`gh`, `glab`, `terraform`, `uv`, `chezmoi`, `starship`, and `sshd`, on top
-of a `node:24-trixie-slim` base with the usual shell tooling (`zsh`,
-`ripgrep`, `fd`, `bat`, `fzf`, `jq`, `direnv`, `git`, `python3`).
+`gh`, `glab`, `terraform`, `uv`, `chezmoi`, `starship`, `typos`,
+`pre-commit`, and `sshd`, on top of a `node:24-trixie-slim` base with the
+usual shell tooling (`zsh`, `ripgrep`, `fd`, `bat`, `eza`, `fzf`, `jq`,
+`direnv`, `git`, `python3`).
 
 ## Install
 
@@ -36,34 +37,45 @@ from the first command that needs it.
 
 ## Usage
 
+paddock wraps no compose verb. Everything after `--` goes to
+`docker compose` untouched:
+
 ```sh
-paddock init                            # scaffold the config directory
-paddock build [--cached] [--no-cache]   # build the image
-paddock up [--build] [--cached]         # start the container in the background
-paddock down [--volumes]                # stop and remove the container
-paddock start                           # start a stopped container
-paddock stop                            # stop the container
-paddock restart                         # restart the container
-paddock status                          # container status plus the resolved ssh port
-paddock logs [-f]                       # container logs
-paddock compose -- <args>               # passthrough, e.g. `paddock compose -- exec agent zsh`
+paddock -- build                # build the image
+paddock -- up -d                # start the container in the background
+paddock -- down                 # stop and remove the container
+paddock -- down -v              # ...and delete the volumes (see Persistence)
+paddock -- ps                   # container status, including the published ports
+paddock -- logs -f              # follow the logs
+paddock -- exec agent zsh       # a shell in the container
+paddock -- config               # the fully resolved compose config
+paddock -- --help               # docker compose's own help
 ```
 
-Bare `paddock` prints help and exits 0. There is no default action, and no
-subcommand attaches you to anything. `down` removes volumes only with
-`--volumes`, since that destroys `agent_home` (see
-[Persistence](#persistence)).
+paddock supplies only the `-f`/`--env-file` assembly (packaged base compose
+file, your optional override, your optional `.env`) and the `PADDOCK_*`
+interpolation variables, then execs compose. Since it execs, compose's exit
+code and error messages reach you unmediated. Every compose subcommand is
+available without hand-assembling the file list, and there's nothing for
+paddock to keep in sync as compose grows new ones.
 
-`paddock compose -- <args>` is the escape hatch: it execs `docker compose`
-with the same `-f`/`--env-file` assembly and the same `PADDOCK_*`
-environment paddock would use itself, followed by whatever you put after
-the `--`. Anything paddock doesn't wrap (`exec`, `config`, `cp`, `top`) is
-reachable that way without hand-assembling the file list.
+paddock's own flags go *before* the `--`:
+
+```sh
+paddock --init                  # scaffold the config directory
+paddock --no-refresh -- build   # build reusing the cached tool-install layer
+paddock --version
+paddock --help                  # paddock's help, as opposed to `paddock -- --help`
+```
+
+**The `--` is required.** `paddock up` is an error, not a shortcut for
+`paddock -- up`, so that paddock's flags and compose's can never be
+confused for one another. Bare `paddock` prints help and exits 0.
 
 ## Connecting
 
-Once `paddock up` is running, connect however you like. The intended path
-is [herdr](https://herdr.dev), which the image ships:
+Once `paddock -- up -d` is running, connect however you like. The intended
+path is [herdr](https://herdr.dev), which the image ships:
 
 ```sh
 herdr --remote ssh://agent@localhost:2222
@@ -72,30 +84,31 @@ herdr --remote ssh://agent@localhost:2222
 Plain `ssh agent@localhost -p 2222` works the same way, as does anything
 else that speaks ssh. The container's sshd allows only the `agent` user and
 only public-key auth (no passwords, no root login), and the port is
-published on `127.0.0.1` only. `paddock status` prints the port it resolves
-if you've changed it.
+published on `127.0.0.1` only. If you've changed the port, `paddock -- ps`
+shows the mapping it resolved.
 
-For a shell without ssh at all, use the passthrough:
+For a shell without ssh at all:
 
 ```sh
-paddock compose -- exec agent zsh
+paddock -- exec agent zsh
 ```
 
 ## Configuration
 
-Everything lives under `${XDG_CONFIG_HOME:-~/.config}/paddock`. `paddock
-init` creates that directory and `certs/` inside it; every file in it is
-optional to paddock, but without `authorized_keys` you can't ssh in:
+Everything lives under `${XDG_CONFIG_HOME:-~/.config}/paddock`.
+`paddock --init` creates that directory and `certs/` inside it; every file
+in it is optional to paddock, but without `authorized_keys` you can't ssh
+in:
 
 - **`authorized_keys`**: public keys allowed to ssh in, in standard
   `authorized_keys` format. paddock always sets `PADDOCK_AUTHORIZED_KEYS`
   to this path and the compose file mounts it read-only into the container,
   where the entrypoint copies it to `/home/agent/.ssh/authorized_keys` with
-  the ownership and mode sshd's `StrictModes` demands. `up`, `start`, and
-  `restart` print a warning if the file doesn't exist, since compose itself
-  doesn't treat a missing file as an error: the container starts fine and
-  just refuses every key. Populate it the normal way, or pull the public
-  half straight out of your ssh-agent:
+  the ownership and mode sshd's `StrictModes` demands. paddock prints a
+  warning on any passthrough if the file doesn't exist, since compose
+  itself doesn't treat a missing file as an error: the container starts
+  fine and just refuses every key. Populate it the normal way, or pull the
+  public half straight out of your ssh-agent:
 
   ```sh
   ssh-add -L >> ~/.config/paddock/authorized_keys
@@ -142,11 +155,16 @@ below, and never overwrites a value you set yourself.
 | `PADDOCK_HTTP_PORT` | `8000` | published host http port (bound to `127.0.0.1`) | no, pass-through only |
 | `PADDOCK_AUTHORIZED_KEYS` | none | mounted read-only as the container's `authorized_keys` source | yes, always |
 | `PADDOCK_CA_CONTEXT` | `./ca-certificates` (packaged empty dir) | the `ca-certificates` named build context | yes, when `certs/` holds at least one `*.crt` |
-| `PADDOCK_TOOLS_REFRESH` | `0` | the Dockerfile's `TOOLS_REFRESH` cache gate | yes, on `build` and `up --build` unless `--cached` |
+| `PADDOCK_TOOLS_REFRESH` | `0` | the Dockerfile's `TOOLS_REFRESH` cache gate | yes, on every invocation unless `--no-refresh` |
 
-`paddock status` resolves `PADDOCK_SSH_PORT` itself to print the port you'd
-connect on, mirroring compose's own precedence: shell environment first,
-then the config dir's `.env`, then the packaged default.
+Since paddock no longer knows which compose verb you're running, it sets a
+fresh `PADDOCK_TOOLS_REFRESH` timestamp on *every* invocation rather than
+guessing at which ones are builds. That only changes what a build does, but
+compose folds build args into the config hash it stamps on the container,
+so a plain `paddock -- up` may recreate the container rather than reusing
+it. Both named volumes survive that (see [Persistence](#persistence)), so
+the cost is a few seconds and any in-container process state. Use
+`paddock --no-refresh -- up` to avoid it.
 
 ## Env vars and secrets
 
@@ -157,7 +175,7 @@ variable can reach the container from exactly three places:
 1. **Your shell**, for anything that shouldn't touch disk:
 
    ```sh
-   GITHUB_TOKEN=$(op read op://Private/GitHub/token) paddock up
+   GITHUB_TOKEN=$(op read op://Private/GitHub/token) paddock -- up -d
    ```
 
    The packaged compose file lists a few valueless pass-through entries
@@ -166,7 +184,7 @@ variable can reach the container from exactly three places:
 
 2. **`docker-compose.override.yml`**, for any other variable name. Add it
    as a pass-through entry the same way the packaged file does, then run
-   `EXTRA_TOKEN=... paddock up`, or give it a literal value in the override
+   `EXTRA_TOKEN=... paddock -- up -d`, or give it a literal value in the override
    if you don't mind it on disk.
 
 3. **A tool's own login inside the container**, e.g. `gh auth login` or
@@ -194,9 +212,8 @@ Two named docker volumes, both prefixed by the compose project name
   `StrictHostKeyChecking`.
 
 Both survive `stop`, `start`, `restart`, a plain `down`, and a rebuild.
-**`paddock down --volumes` is the destructive one.** It forwards `-v` to
-compose and deletes both volumes for good, tool auth and shell history
-included.
+**`paddock -- down -v` is the destructive one.** It deletes both volumes
+for good, tool auth and shell history included.
 
 ## The tools cache gate
 
@@ -207,19 +224,18 @@ across rebuilds. Everything below it (`herdr`, `claude`, `copilot`,
 `codex`, `bd`) reinstalls whenever the `TOOLS_REFRESH` build arg changes,
 so those fast-moving tools don't silently pin an old version forever.
 
-- `paddock build` and `paddock up --build` set a fresh
-  `PADDOCK_TOOLS_REFRESH` timestamp by default, busting the gate so those
-  tools reinstall latest.
-- `--cached` on either leaves the variable alone instead, so the compose
-  file's default of `0` applies and the cached layers are reused.
+- paddock sets a fresh `PADDOCK_TOOLS_REFRESH` timestamp by default,
+  busting the gate so those tools reinstall latest on the next build.
+- `paddock --no-refresh -- build` leaves the variable alone instead, so the
+  compose file's default of `0` applies and the cached layers are reused.
 
-`paddock build --no-cache` is the unrelated bigger hammer: it passes
-`--no-cache` through to `docker compose build`, rebuilding every layer.
+`paddock -- build --no-cache` is the unrelated bigger hammer: `--no-cache`
+goes straight to `docker compose build` and rebuilds every layer.
 
 ## Corporate CA certificates
 
 Drop the root CA(s) into `~/.config/paddock/certs/` as `*.crt` files and
-run `paddock build`. paddock points the `ca-certificates` build context at
+run `paddock -- build`. paddock points the `ca-certificates` build context at
 that directory, and the Dockerfile copies its contents into
 `/usr/local/share/ca-certificates/paddock/` and runs
 `update-ca-certificates` right after the base image's first `apt-get
@@ -234,7 +250,7 @@ ignore the system trust store by default, so the image also pins
 `CURL_CA_BUNDLE`, `PIP_CERT`, and `GIT_SSL_CAINFO` at the merged system
 bundle. The trust is baked into the image, so it covers the running
 container too with no runtime mount, and changing the certs needs a
-`paddock build` to take effect.
+`paddock -- build` to take effect.
 
 This covers CA trust only. If your network also needs an
 `HTTP_PROXY`/`HTTPS_PROXY` to reach anything *during the build itself*,
@@ -267,7 +283,7 @@ volumes:
 ```
 
 ```sh
-paddock up
+paddock -- up -d
 ```
 
 paddock now starts against the migrated volume instead of creating a fresh
@@ -346,7 +362,7 @@ If an old stack (either one) is still listening on port 2222 and you're not
 ready to remove it yet, give paddock its own port for the transition:
 
 ```sh
-PADDOCK_SSH_PORT=2223 paddock up
+PADDOCK_SSH_PORT=2223 paddock -- up -d
 ```
 
 or set it in `~/.config/paddock/.env` so it applies to every invocation

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
+from click.testing import Result
 from typer.testing import CliRunner
 
 from paddock import cli, compose, paths
@@ -10,222 +12,225 @@ from paddock import cli, compose, paths
 runner = CliRunner()
 
 
+def invoke(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> Result:
+    """Invoke the app with ``sys.argv`` set to match.
+
+    ``cli._passthrough_args`` reads ``sys.argv`` to tell whether a ``--``
+    separator was typed, since Click consumes it without recording it.
+    """
+    monkeypatch.setattr(sys, "argv", ["paddock", *argv])
+    return runner.invoke(cli.app, argv)
+
+
 @pytest.fixture
 def fake_compose(monkeypatch: pytest.MonkeyPatch):
-    """Capture the argv/env that would go to docker compose instead of running it."""
-    calls: list[tuple[str, list[str], dict[str, str]]] = []
-
-    def fake_run(args: list[str], env: dict[str, str]) -> None:
-        calls.append(("run", args, env))
+    """Capture the argv/env that would go to docker compose instead of execing it."""
+    calls: list[tuple[list[str], dict[str, str]]] = []
 
     def fake_exec(args: list[str], env: dict[str, str]) -> None:
-        calls.append(("exec", args, env))
+        calls.append((args, env))
 
-    monkeypatch.setattr(compose, "run", fake_run)
     monkeypatch.setattr(compose, "exec_", fake_exec)
     return calls
 
 
-def test_bare_invocation_prints_help_and_exits_zero():
-    result = runner.invoke(cli.app, [])
+# --- _passthrough_args, the pure separator check -----------------------------
+
+
+def test_passthrough_args_returns_none_without_separator():
+    assert cli._passthrough_args(["up", "-d"]) is None
+
+
+def test_passthrough_args_returns_args_after_separator():
+    assert cli._passthrough_args(["--", "up", "-d"]) == ["up", "-d"]
+
+
+def test_passthrough_args_returns_empty_list_for_bare_separator():
+    assert cli._passthrough_args(["--"]) == []
+
+
+def test_passthrough_args_splits_on_the_first_separator_only():
+    assert cli._passthrough_args(["--init", "--", "exec", "agent", "--", "zsh"]) == [
+        "exec",
+        "agent",
+        "--",
+        "zsh",
+    ]
+
+
+# --- top-level behavior ------------------------------------------------------
+
+
+def test_bare_invocation_prints_help_and_exits_zero(monkeypatch: pytest.MonkeyPatch):
+    result = invoke([], monkeypatch)
     assert result.exit_code == 0
     assert "Usage:" in result.output
 
 
-def test_help_lists_every_subcommand():
-    result = runner.invoke(cli.app, ["--help"])
+def test_bare_separator_prints_help_and_exits_zero(monkeypatch: pytest.MonkeyPatch):
+    result = invoke(["--"], monkeypatch)
     assert result.exit_code == 0
-    for name in [
-        "init",
-        "build",
-        "up",
-        "down",
-        "start",
-        "stop",
-        "restart",
-        "status",
-        "logs",
-        "compose",
-    ]:
-        assert name in result.output
+    assert "Usage:" in result.output
 
 
-def test_version():
-    result = runner.invoke(cli.app, ["--version"])
+def test_help_advertises_passthrough_args(monkeypatch: pytest.MonkeyPatch):
+    result = invoke(["--help"], monkeypatch)
+    assert result.exit_code == 0
+    assert "ARGS" in result.output
+    for flag in ["--init", "--refresh", "--no-refresh"]:
+        assert flag in result.output
+
+
+def test_version(monkeypatch: pytest.MonkeyPatch):
+    result = invoke(["--version"], monkeypatch)
     assert result.exit_code == 0
     assert result.output.strip()
 
 
-def test_init_creates_config_and_certs_dirs(xdg_base: Path):
-    result = runner.invoke(cli.app, ["init"])
+# --- the separator is required -----------------------------------------------
+
+
+def test_args_without_separator_fail(fake_compose, xdg_base: Path, monkeypatch):
+    result = invoke(["start"], monkeypatch)
+
+    assert result.exit_code == 1
+    assert "must follow '--'" in result.output
+    assert fake_compose == []
+
+
+def test_args_without_separator_fail_even_with_flags(fake_compose, xdg_base: Path, monkeypatch):
+    result = invoke(["--no-refresh", "logs", "-f"], monkeypatch)
+
+    assert result.exit_code == 1
+    assert fake_compose == []
+
+
+# --- passthrough -------------------------------------------------------------
+
+
+def test_passthrough_execs_compose(fake_compose, xdg_base: Path, monkeypatch):
+    invoke(["--", "start"], monkeypatch)
+
+    args, _ = fake_compose[0]
+    assert args[:3] == ["docker", "compose", "-f"]
+    assert args[-1] == "start"
+
+
+def test_passthrough_forwards_flags_untouched(fake_compose, xdg_base: Path, monkeypatch):
+    invoke(["--", "logs", "-f"], monkeypatch)
+
+    args, _ = fake_compose[0]
+    assert args[-2:] == ["logs", "-f"]
+
+
+def test_passthrough_forwards_multiple_args(fake_compose, xdg_base: Path, monkeypatch):
+    invoke(["--", "exec", "agent", "zsh"], monkeypatch)
+
+    args, _ = fake_compose[0]
+    assert args[-3:] == ["exec", "agent", "zsh"]
+
+
+def test_passthrough_forwards_compose_help(fake_compose, xdg_base: Path, monkeypatch):
+    invoke(["--", "--help"], monkeypatch)
+
+    args, _ = fake_compose[0]
+    assert args[-1] == "--help"
+
+
+def test_compose_error_prints_error_and_exits_one(xdg_base: Path, monkeypatch: pytest.MonkeyPatch):
+    def raise_error(args: list[str], env: dict[str, str]) -> None:
+        raise compose.ComposeError("docker executable not found on PATH")
+
+    monkeypatch.setattr(compose, "exec_", raise_error)
+
+    result = invoke(["--", "up"], monkeypatch)
+
+    assert result.exit_code == 1
+    assert "error: docker executable not found on PATH" in result.output
+
+
+# --- --refresh / --no-refresh ------------------------------------------------
+
+
+def test_refresh_is_the_default(fake_compose, xdg_base: Path, monkeypatch):
+    invoke(["--", "build"], monkeypatch)
+
+    _, env = fake_compose[0]
+    assert env["PADDOCK_TOOLS_REFRESH"].isdigit()
+
+
+def test_no_refresh_leaves_tools_refresh_unset(fake_compose, xdg_base: Path, monkeypatch):
+    invoke(["--no-refresh", "--", "build"], monkeypatch)
+
+    _, env = fake_compose[0]
+    assert "PADDOCK_TOOLS_REFRESH" not in env
+
+
+# --- the authorized_keys warning ---------------------------------------------
+
+
+def test_warns_when_authorized_keys_missing(fake_compose, xdg_base: Path, monkeypatch):
+    result = invoke(["--", "up"], monkeypatch)
+
+    assert "warning:" in result.output
+    assert "authorized_keys" in result.output
+
+
+def test_no_warning_when_authorized_keys_present(fake_compose, xdg_base: Path, monkeypatch):
+    paths.config_dir().mkdir(parents=True)
+    paths.authorized_keys_path().write_text("ssh-ed25519 AAAA... test\n")
+
+    result = invoke(["--", "up"], monkeypatch)
+
+    assert "warning:" not in result.output
+
+
+# --- --init ------------------------------------------------------------------
+
+
+def test_init_creates_config_and_certs_dirs(xdg_base: Path, monkeypatch: pytest.MonkeyPatch):
+    result = invoke(["--init"], monkeypatch)
 
     assert result.exit_code == 0
     assert paths.config_dir().is_dir()
     assert paths.certs_dir().is_dir()
 
 
-def test_init_prompts_for_authorized_keys_when_missing(xdg_base: Path):
-    result = runner.invoke(cli.app, ["init"])
+def test_init_alone_does_not_print_help(xdg_base: Path, monkeypatch: pytest.MonkeyPatch):
+    result = invoke(["--init"], monkeypatch)
+    assert "Usage:" not in result.output
+
+
+def test_init_prompts_for_authorized_keys_when_missing(
+    xdg_base: Path, monkeypatch: pytest.MonkeyPatch
+):
+    result = invoke(["--init"], monkeypatch)
     assert "authorized_keys" in result.output
 
 
-def test_init_does_not_prompt_when_authorized_keys_present(xdg_base: Path):
+def test_init_does_not_prompt_when_authorized_keys_present(
+    xdg_base: Path, monkeypatch: pytest.MonkeyPatch
+):
     paths.config_dir().mkdir(parents=True)
     paths.authorized_keys_path().write_text("ssh-ed25519 AAAA... test\n")
 
-    result = runner.invoke(cli.app, ["init"])
+    result = invoke(["--init"], monkeypatch)
 
     assert "authorized_keys" not in result.output
 
 
-def test_init_is_idempotent(xdg_base: Path):
-    runner.invoke(cli.app, ["init"])
-    result = runner.invoke(cli.app, ["init"])
+def test_init_is_idempotent(xdg_base: Path, monkeypatch: pytest.MonkeyPatch):
+    invoke(["--init"], monkeypatch)
+    result = invoke(["--init"], monkeypatch)
 
     assert result.exit_code == 0
     assert "already exists" in result.output
 
 
-def test_build_refreshes_tools_by_default(fake_compose, xdg_base: Path):
-    result = runner.invoke(cli.app, ["build"])
+def test_init_then_passthrough_runs_both(fake_compose, xdg_base: Path, monkeypatch):
+    result = invoke(["--init", "--", "up"], monkeypatch)
+
     assert result.exit_code == 0
-    kind, args, env = fake_compose[0]
-    assert kind == "run"
-    assert args[-1] == "build"
-    assert "PADDOCK_TOOLS_REFRESH" in env
-
-
-def test_build_cached_pins_tools_refresh(fake_compose, xdg_base: Path):
-    runner.invoke(cli.app, ["build", "--cached"])
-    _, _, env = fake_compose[0]
-    assert "PADDOCK_TOOLS_REFRESH" not in env
-
-
-def test_build_no_cache_passes_through(fake_compose, xdg_base: Path):
-    runner.invoke(cli.app, ["build", "--no-cache"])
-    _, args, _ = fake_compose[0]
-    assert args[-2:] == ["build", "--no-cache"]
-
-
-def test_up_defaults_to_no_build(fake_compose, xdg_base: Path):
-    runner.invoke(cli.app, ["up"])
-    _, args, env = fake_compose[0]
-    assert args[-2:] == ["up", "-d"]
-    assert "PADDOCK_TOOLS_REFRESH" not in env
-
-
-def test_up_build_refreshes_tools(fake_compose, xdg_base: Path):
-    runner.invoke(cli.app, ["up", "--build"])
-    _, args, env = fake_compose[0]
-    assert args[-3:] == ["up", "-d", "--build"]
-    assert "PADDOCK_TOOLS_REFRESH" in env
-
-
-def test_up_build_cached_stays_cached(fake_compose, xdg_base: Path):
-    runner.invoke(cli.app, ["up", "--build", "--cached"])
-    _, args, env = fake_compose[0]
-    assert "--build" in args
-    assert "PADDOCK_TOOLS_REFRESH" not in env
-
-
-def test_down_defaults_to_no_volumes(fake_compose, xdg_base: Path):
-    runner.invoke(cli.app, ["down"])
-    _, args, _ = fake_compose[0]
-    assert "-v" not in args
-
-
-def test_down_volumes_forwards_v(fake_compose, xdg_base: Path):
-    runner.invoke(cli.app, ["down", "--volumes"])
-    _, args, _ = fake_compose[0]
-    assert args[-1] == "-v"
-
-
-@pytest.mark.parametrize("name", ["start", "stop", "restart"])
-def test_lifecycle_commands_map_to_compose_subcommand(fake_compose, xdg_base: Path, name: str):
-    runner.invoke(cli.app, [name])
-    _, args, _ = fake_compose[0]
-    assert args[-1] == name
-
-
-def test_status_reports_default_ssh_port(fake_compose, xdg_base: Path):
-    result = runner.invoke(cli.app, ["status"])
-    assert "2222" in result.output
-    _, args, _ = fake_compose[0]
-    assert args[-1] == "ps"
-
-
-def test_status_reports_ssh_port_from_env_file(fake_compose, xdg_base: Path):
-    paths.config_dir().mkdir(parents=True)
-    paths.env_file().write_text("PADDOCK_SSH_PORT=2299\n")
-
-    result = runner.invoke(cli.app, ["status"])
-
-    assert "2299" in result.output
-
-
-def test_status_reports_ssh_port_from_shell_env(
-    fake_compose, xdg_base: Path, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setenv("PADDOCK_SSH_PORT", "9999")
-    result = runner.invoke(cli.app, ["status"])
-    assert "9999" in result.output
-
-
-def test_logs_execs_compose(fake_compose, xdg_base: Path):
-    runner.invoke(cli.app, ["logs"])
-    kind, args, _ = fake_compose[0]
-    assert kind == "exec"
-    assert args[-1] == "logs"
-
-
-def test_logs_follow_forwards_flag(fake_compose, xdg_base: Path):
-    runner.invoke(cli.app, ["logs", "-f"])
-    _, args, _ = fake_compose[0]
-    assert args[-2:] == ["logs", "-f"]
-
-
-def test_compose_passthrough_execs_with_trailing_args(fake_compose, xdg_base: Path):
-    runner.invoke(cli.app, ["compose", "--", "config"])
-    kind, args, _ = fake_compose[0]
-    assert kind == "exec"
-    assert args[-1] == "config"
-
-
-def test_compose_passthrough_forwards_multiple_args(fake_compose, xdg_base: Path):
-    runner.invoke(cli.app, ["compose", "--", "exec", "agent", "zsh"])
-    _, args, _ = fake_compose[0]
-    assert args[-3:] == ["exec", "agent", "zsh"]
-
-
-@pytest.mark.parametrize("name", ["up", "start", "restart"])
-def test_warns_when_authorized_keys_missing(fake_compose, xdg_base: Path, name: str):
-    result = runner.invoke(cli.app, [name])
-    assert "warning:" in result.output
-    assert "authorized_keys" in result.output
-
-
-@pytest.mark.parametrize("name", ["up", "start", "restart"])
-def test_no_warning_when_authorized_keys_present(fake_compose, xdg_base: Path, name: str):
-    paths.config_dir().mkdir(parents=True)
-    paths.authorized_keys_path().write_text("ssh-ed25519 AAAA... test\n")
-
-    result = runner.invoke(cli.app, [name])
-
-    assert "warning:" not in result.output
-
-
-def test_build_does_not_warn_about_authorized_keys(fake_compose, xdg_base: Path):
-    result = runner.invoke(cli.app, ["build"])
-    assert "warning:" not in result.output
-
-
-def test_compose_error_prints_error_and_exits_one(monkeypatch: pytest.MonkeyPatch, xdg_base: Path):
-    def raise_error(args: list[str], env: dict[str, str]) -> None:
-        raise compose.ComposeError("docker executable not found on PATH")
-
-    monkeypatch.setattr(compose, "run", raise_error)
-
-    result = runner.invoke(cli.app, ["start"])
-
-    assert result.exit_code == 1
-    assert "error: docker executable not found on PATH" in result.output
+    assert paths.config_dir().is_dir()
+    args, _ = fake_compose[0]
+    assert args[-1] == "up"

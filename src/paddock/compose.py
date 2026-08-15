@@ -2,7 +2,7 @@
 
 Two pure functions do the interesting work — building the argv and building
 the interpolation environment — so they're testable without a docker daemon.
-A thin runner shells out to the ``docker compose`` CLI.
+``exec_`` then hands the process over to the ``docker compose`` CLI.
 
 On ``--env-file``: compose's ``--env-file`` feeds *interpolation* only, i.e.
 the ``${VAR:-default}`` substitutions inside the compose file itself (like
@@ -14,7 +14,6 @@ file's ``environment:``/``env_file:`` keys instead.
 from __future__ import annotations
 
 import os
-import subprocess
 import time
 from typing import NoReturn
 
@@ -22,7 +21,7 @@ from . import paths
 
 
 class ComposeError(Exception):
-    """Raised when the docker compose CLI is missing or fails."""
+    """Raised when the docker compose CLI is missing."""
 
 
 def compose_args(subcommand_args: list[str]) -> list[str]:
@@ -66,24 +65,13 @@ def interpolation_env(refresh_tools: bool) -> dict[str, str]:
     return env
 
 
-def run(args: list[str], env: dict[str, str]) -> None:
-    """Run a compose command, waiting for it to finish."""
-    try:
-        subprocess.run(args, env=env, check=True)
-    except FileNotFoundError as exc:
-        raise ComposeError("docker executable not found on PATH") from exc
-    except subprocess.CalledProcessError as exc:
-        raise ComposeError(
-            f"docker compose command failed (exit {exc.returncode}): {' '.join(args)}"
-        ) from exc
-
-
 def exec_(args: list[str], env: dict[str, str]) -> NoReturn:
     """Replace the current process with the compose command.
 
-    Used for passthrough/attach-like subcommands (e.g. ``logs -f``) where
-    paddock has no further work to do once the child starts, so signals and
-    the terminal should go straight to it.
+    Every paddock invocation is a passthrough, so paddock never has work left
+    once the child starts: signals and the terminal go straight to it, and
+    compose's own exit code and error messages reach the user unmediated
+    rather than being re-reported behind a second paddock-level error.
     """
     try:
         os.execvpe(args[0], args, env)

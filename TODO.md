@@ -17,8 +17,16 @@ Retiring the agent-container repo (out of tree) is no longer tracked here; Kris 
 
 ## Open work needing no Docker
 
-- ~~**Preflight checks**~~ Done. `up`/`start`/`restart` now print a non-fatal warning when `authorized_keys` is missing, since that's the case that silently fails (a container that starts fine and refuses every key) rather than surfacing a `ComposeError`. `docker`/the compose plugin were left alone: a missing `docker` already gets a clean `ComposeError` message, and a missing compose plugin surfaces docker's own stderr directly, so a preflight check there would just add a redundant subprocess call.
-- ~~**`paddock init`**~~ Done. Creates the config dir and `certs/` if missing (idempotent), and nudges toward populating `authorized_keys` without creating it itself (an empty file would silently defeat the preflight warning above).
+- ~~**Preflight checks**~~ Done. paddock prints a non-fatal warning on any passthrough when `authorized_keys` is missing, since that's the case that silently fails (a container that starts fine and refuses every key) rather than surfacing a `ComposeError`. `docker`/the compose plugin were left alone: a missing `docker` already gets a clean `ComposeError` message, and a missing compose plugin surfaces docker's own stderr directly, so a preflight check there would just add a redundant subprocess call.
+- ~~**`paddock init`**~~ Done, as the `--init` flag rather than a subcommand (see the 4.0 rewrite below). Creates the config dir and `certs/` if missing (idempotent), and nudges toward populating `authorized_keys` without creating it itself (an empty file would silently defeat the preflight warning above).
+
+## The 4.0 passthrough rewrite
+
+The per-verb subcommand CLI is gone. `paddock -- <args>` execs `docker compose` with paddock's file/env assembly and nothing else, paddock's own flags (`--init`, `--refresh`/`--no-refresh`, `--version`) go before the `--`, and the `--` is required. What prompted it: `paddock start` failed with compose's clear "no container to start" message plus a redundant paddock `error:` line under it, and `start` vs `up` was a distinction with no situation that justified it.
+
+Unverified against a real daemon (all of it passes locally and `paddock -- config` resolves correctly, but no container has been started with 4.0):
+
+- **Does `paddock -- up` actually recreate the container each time?** This is the accepted tradeoff of defaulting to `--refresh`: compose folds build args into the container config hash, so a fresh `PADDOCK_TOOLS_REFRESH` on every invocation may force recreation. If it turns out to recreate on every single `up`, reconsider whether the default should flip to `--no-refresh`.
 
 ## Small fixes found during integration
 

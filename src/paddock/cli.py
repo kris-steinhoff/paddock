@@ -1,18 +1,23 @@
-"""The paddock CLI: subcommands over a docker-compose-managed agent container."""
+"""The paddock CLI: a thin ``docker compose`` passthrough for the agent container.
+
+paddock wraps no compose verb. Everything after ``--`` is handed to
+``docker compose`` as-is, with paddock supplying only the file assembly
+(packaged base compose file, optional per-machine override, optional
+``--env-file``) and the ``PADDOCK_*`` interpolation variables. The one thing
+that isn't a compose verb, scaffolding the config directory, is ``--init``.
+"""
 
 from __future__ import annotations
 
-import os
+import sys
 from importlib.metadata import version as _pkg_version
-from typing import NoReturn
+from typing import Annotated, NoReturn
 
 import typer
 
 from . import compose, paths
 
-app = typer.Typer(add_completion=False, help=__doc__, no_args_is_help=False)
-
-DEFAULT_SSH_PORT = "2222"
+app = typer.Typer(add_completion=False)
 
 
 def _version_callback(value: bool) -> None:
@@ -21,81 +26,25 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-@app.callback(invoke_without_command=True)
-def main(
-    ctx: typer.Context,
-    version: bool = typer.Option(
-        False,
-        "--version",
-        callback=_version_callback,
-        is_eager=True,
-        help="Show the paddock version and exit.",
-    ),
-) -> None:
-    """Build, start, stop, and manage the paddock container via docker compose."""
-    if ctx.invoked_subcommand is None:
-        typer.echo(ctx.get_help())
-        raise typer.Exit(code=0)
-
-
 def _fail(message: str) -> NoReturn:
     typer.secho(f"error: {message}", fg=typer.colors.RED, err=True)
     raise typer.Exit(code=1)
 
 
-def _run_compose(subcommand_args: list[str], *, refresh_tools: bool = False) -> None:
-    try:
-        compose.run(compose.compose_args(subcommand_args), compose.interpolation_env(refresh_tools))
-    except compose.ComposeError as exc:
-        _fail(str(exc))
+def _passthrough_args(argv: list[str]) -> list[str] | None:
+    """Return the args following the first ``--``, or None when there is no ``--``.
 
-
-def _exec_compose(subcommand_args: list[str]) -> NoReturn:
-    try:
-        compose.exec_(
-            compose.compose_args(subcommand_args), compose.interpolation_env(refresh_tools=False)
-        )
-    except compose.ComposeError as exc:
-        _fail(str(exc))
-
-
-def _warn_if_no_authorized_keys() -> None:
-    """Warn before starting a container that will silently refuse every ssh key.
-
-    ``interpolation_env`` always sets ``PADDOCK_AUTHORIZED_KEYS`` to this path
-    whether or not the file exists, so a missing file is not a compose error.
-    The container starts and sshd runs; it just has no keys to accept.
+    Click consumes the ``--`` separator without recording that it saw one, so
+    the parsed arguments alone can't tell ``paddock -- start`` from
+    ``paddock start``. This reads ``sys.argv`` to answer that question; when a
+    separator is present the slice it returns matches Click's own parse.
     """
-    authorized_keys = paths.authorized_keys_path()
-    if not authorized_keys.exists():
-        typer.secho(
-            f"warning: {authorized_keys} does not exist; "
-            "the container will start but accept no ssh key",
-            fg=typer.colors.YELLOW,
-            err=True,
-        )
+    if "--" not in argv:
+        return None
+    return argv[argv.index("--") + 1 :]
 
 
-def _resolve_ssh_port() -> str:
-    """Resolve the published ssh port using compose's own interpolation precedence.
-
-    Shell environment wins (matching ``interpolation_env``'s pass-through
-    behavior), then the config dir's ``.env`` (compose's ``--env-file``),
-    then the packaged compose file's own default.
-    """
-    if "PADDOCK_SSH_PORT" in os.environ:
-        return os.environ["PADDOCK_SSH_PORT"]
-    env_file = paths.env_file()
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            name, _, value = line.partition("=")
-            if name.strip() == "PADDOCK_SSH_PORT":
-                return value.strip()
-    return DEFAULT_SSH_PORT
-
-
-@app.command()
-def init() -> None:
+def _init() -> None:
     """Scaffold the config directory."""
     config_dir = paths.config_dir()
     certs_dir = paths.certs_dir()
@@ -117,99 +66,69 @@ def init() -> None:
         typer.echo(f"  ssh-add -L >> {authorized_keys}")
 
 
-@app.command()
-def build(
-    cached: bool = typer.Option(
-        False,
-        "--cached",
-        help="Leave PADDOCK_TOOLS_REFRESH unset, reusing the cached tool-install layer.",
-    ),
-    no_cache: bool = typer.Option(
-        False, "--no-cache", help="Full rebuild: pass --no-cache through to docker compose build."
-    ),
-) -> None:
-    """Build the image."""
-    args = ["build"]
-    if no_cache:
-        args.append("--no-cache")
-    _run_compose(args, refresh_tools=not cached)
+def _warn_if_no_authorized_keys() -> None:
+    """Warn before a compose call that may start a container refusing every key.
+
+    ``interpolation_env`` always sets ``PADDOCK_AUTHORIZED_KEYS`` to this path
+    whether or not the file exists, so a missing file is not a compose error.
+    The container starts and sshd runs; it just has no keys to accept.
+    """
+    authorized_keys = paths.authorized_keys_path()
+    if not authorized_keys.exists():
+        typer.secho(
+            f"warning: {authorized_keys} does not exist; "
+            "the container will start but accept no ssh key",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
 
 
-@app.command()
-def up(
-    build: bool = typer.Option(False, "--build", help="Build the image first."),
-    cached: bool = typer.Option(
-        False,
-        "--cached",
-        help="With --build, leave PADDOCK_TOOLS_REFRESH unset instead of refreshing.",
-    ),
+@app.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+def paddock(
+    ctx: typer.Context,
+    args: Annotated[
+        list[str] | None,
+        typer.Argument(help="Arguments passed straight to docker compose, after a `--`."),
+    ] = None,
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            callback=_version_callback,
+            is_eager=True,
+            help="Show the paddock version and exit.",
+        ),
+    ] = False,
+    init: Annotated[
+        bool, typer.Option("--init", help="Scaffold the config directory, then continue.")
+    ] = False,
+    refresh: Annotated[
+        bool,
+        typer.Option(
+            "--refresh/--no-refresh",
+            help="Set PADDOCK_TOOLS_REFRESH so a build reinstalls the fast-moving tools.",
+        ),
+    ] = True,
 ) -> None:
-    """Start the container in the background."""
+    """Run docker compose against the paddock container, e.g. `paddock -- up -d`."""
+    passthrough = _passthrough_args(sys.argv[1:])
+
+    if init:
+        _init()
+
+    if args and passthrough is None:
+        _fail("compose arguments must follow '--', e.g. `paddock -- up -d`")
+
+    if not passthrough:
+        if init:
+            raise typer.Exit(code=0)
+        typer.echo(ctx.get_help())
+        raise typer.Exit(code=0)
+
     _warn_if_no_authorized_keys()
-    args = ["up", "-d"]
-    if build:
-        args.append("--build")
-    _run_compose(args, refresh_tools=build and not cached)
-
-
-@app.command()
-def down(
-    volumes: bool = typer.Option(
-        False,
-        "--volumes",
-        help="Also remove volumes. Destroys agent_home: tool auth, shell history, dotfiles.",
-    ),
-) -> None:
-    """Stop and remove the container."""
-    args = ["down"]
-    if volumes:
-        args.append("-v")
-    _run_compose(args)
-
-
-@app.command()
-def start() -> None:
-    """Start the container."""
-    _warn_if_no_authorized_keys()
-    _run_compose(["start"])
-
-
-@app.command()
-def stop() -> None:
-    """Stop the container."""
-    _run_compose(["stop"])
-
-
-@app.command()
-def restart() -> None:
-    """Restart the container."""
-    _warn_if_no_authorized_keys()
-    _run_compose(["restart"])
-
-
-@app.command()
-def status() -> None:
-    """Show container status, including the published ssh port."""
-    typer.echo(f"ssh port: {_resolve_ssh_port()}")
-    _run_compose(["ps"])
-
-
-@app.command()
-def logs(
-    follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output."),
-) -> None:
-    """Show container logs."""
-    args = ["logs"]
-    if follow:
-        args.append("-f")
-    _exec_compose(args)
-
-
-@app.command(
-    "compose",
-    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
-    add_help_option=False,
-    help="Passthrough to docker compose, e.g. `paddock compose -- exec agent zsh`.",
-)
-def compose_passthrough(ctx: typer.Context) -> None:
-    _exec_compose(ctx.args)
+    try:
+        compose.exec_(
+            compose.compose_args(passthrough), compose.interpolation_env(refresh_tools=refresh)
+        )
+    except compose.ComposeError as exc:
+        _fail(str(exc))

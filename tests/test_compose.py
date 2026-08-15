@@ -123,20 +123,6 @@ def test_interpolation_env_never_overwrites_user_set_tools_refresh_without_reque
     assert env["PADDOCK_TOOLS_REFRESH"] == "42"
 
 
-def test_run_raises_compose_error_on_nonzero_exit():
-    with pytest.raises(compose.ComposeError):
-        compose.run(["sh", "-c", "exit 1"], env={})
-
-
-def test_run_raises_compose_error_when_executable_missing():
-    with pytest.raises(compose.ComposeError):
-        compose.run(["paddock-does-not-exist-anywhere"], env={"PATH": ""})
-
-
-def test_run_succeeds_on_zero_exit():
-    compose.run(["sh", "-c", "exit 0"], env={})
-
-
 def test_exec_raises_compose_error_when_executable_missing():
     with pytest.raises(compose.ComposeError):
         compose.exec_(["paddock-does-not-exist-anywhere"], env={"PATH": ""})
