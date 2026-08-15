@@ -15,6 +15,7 @@ RUN apt-get update \
         ripgrep \
         fd-find \
         bat \
+        eza \
         fzf \
         jq \
         less \
@@ -82,6 +83,19 @@ RUN arch=$(case "$(uname -m)" in aarch64) echo arm64 ;; *) echo amd64 ;; esac) \
     && unzip -d /usr/local/bin /tmp/terraform.zip \
     && rm /tmp/terraform.zip
 
+# typos-cli isn't in Debian/apt either. It ships prebuilt musl tarballs on
+# GitHub releases (bin/typos inside); resolve the latest tag via the API and
+# pull the matching arch. uname -m for the same reason as nvim below.
+# GitHub's API 403s requests with no User-Agent header, which curl doesn't
+# send by default.
+RUN arch=$(case "$(uname -m)" in aarch64) echo aarch64 ;; *) echo x86_64 ;; esac) \
+    && tag=$(curl -fsSL -H "User-Agent: paddock" https://api.github.com/repos/crate-ci/typos/releases/latest | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4) \
+    && curl -fsSLo /tmp/typos.tar.gz "https://github.com/crate-ci/typos/releases/download/${tag}/typos-${tag}-${arch}-unknown-linux-musl.tar.gz" \
+    && mkdir -p /tmp/typos \
+    && tar -C /tmp/typos -xzf /tmp/typos.tar.gz \
+    && mv /tmp/typos/typos /usr/local/bin/typos \
+    && rm -rf /tmp/typos.tar.gz /tmp/typos
+
 # Neovim's Debian/apt build lags releases by a lot; the dotfiles' lazy-lock.json
 # and treesitter setup expect a current release, so pull the GitHub binary.
 # uname -m (not TARGETARCH) since that ARG only gets auto-populated by
@@ -96,6 +110,10 @@ RUN arch=$(case "$(uname -m)" in aarch64) echo arm64 ;; *) echo x86_64 ;; esac) 
 RUN BINDIR=/usr/local/bin sh -c "$(curl -fsLS get.chezmoi.io)"
 
 RUN curl -fsSL https://starship.rs/install.sh | sh -s -- --yes
+
+# Debian's system pip refuses installs outside a venv (PEP 668); pre-commit
+# is a global CLI tool here, not a project dependency, so override that.
+RUN pip3 install --break-system-packages pre-commit
 
 # Cached tools: kept above the cache gate near the bottom. The fast-moving
 # ones (claude, copilot, codex) install below the gate so they track latest.
@@ -151,7 +169,14 @@ RUN echo "tools refresh token: ${TOOLS_REFRESH}"
 RUN curl -fsSL https://herdr.dev/install.sh | sh
 
 USER root
+# Claude Code's CLI is a platform-native binary that the npm package's
+# postinstall fetches separately. That fetch doesn't land under `npm install
+# -g` here (npm skips the optional platform-specific dependency), so `claude`
+# errors with "native binary not installed". Running install.cjs explicitly
+# pulls the binary into the package tree under /usr/local — which, unlike
+# /home/agent, isn't masked by the persistent agent_home volume at runtime.
 RUN npm install -g @anthropic-ai/claude-code @github/copilot @openai/codex \
+    && node "$(npm root -g)/@anthropic-ai/claude-code/install.cjs" \
     && npm cache clean --force
 
 # Beads (bd): AI-supervised issue tracker CLI. No apt/npm package; the
