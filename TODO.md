@@ -2,7 +2,7 @@
 
 Remaining work after the paddock 3.0 compose rewrite landed on `main` (`9d18312`).
 
-Beads was the tracker for this work, but its database migrated to schema v65 while the local binary only knows v53, so `bd` errors out on every command. This file is the interim record. The issue ids below are the original beads ids, kept so the two can be reconciled if beads comes back.
+Beads was the tracker for this work and has been removed from the project. This file is now the record. The ids below are the old beads ids, kept only as labels so items can be matched against git history. The last exported snapshot of that tracker is `.beads/issues.jsonl` as of commit `5b25cfb`.
 
 ## Blocked on a real Docker daemon
 
@@ -28,5 +28,4 @@ None of the image work in the 3.0 rewrite was ever built. The dev container this
 
 - **No git tags exist.** Consider tagging `9d18312` as `v3.0`.
 - **The `milhouse/*` branches are still around.** Their content reached `main` through curated commits rather than merges, so git's `--merged` only recognises three of them. The other five and their worktrees under `~/.herdr/worktrees/paddock/` can be deleted once nobody wants the history.
-- **`.beads/interactions.jsonl` and `.beads/issues.jsonl` have uncommitted changes**, plus a stray untracked `.beads.gate.lock`. Left alone because beads was mid-migration and the exports may not be trustworthy.
-- **Fix beads**: `CGO_ENABLED=0 go install -tags gms_pure_go github.com/steveyegge/beads/cmd/bd@latest`. Issues to close on the way back in: `paddock-dt1`, `paddock-3t0.1`, `paddock-3t0.2`, and the packaging half of `paddock-aye.5`.
+- **The `.milhouse/runs/` directory is still present.** It holds run logs from the agent runs that produced the 3.0 rewrite. Delete it whenever those are no longer interesting.

@@ -65,14 +65,6 @@ The container itself is covered by two scripts rather than by pytest, both smoke
 
 `pyproject.toml` sets `[tool.uv] exclude-newer = "2 weeks ago"`, a rolling supply-chain delay so freshly published (possibly compromised) releases are ignored until they have had two weeks to be vetted. This is evaluated at each resolution, so re-running `uv lock` naturally picks up releases as they age past the window. `uv.lock` is committed.
 
-## Beads Issue Tracker
+## Issue tracking
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
-
-### Rules
-
-- Use `bd` for ALL task tracking
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
-
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export.
+Remaining work lives in `TODO.md`. This project previously used beads (`bd`), which has been removed. The old issue ids (`paddock-96h`, `paddock-aye`, `paddock-3t0` and their children) still appear in git history and in `TODO.md` as labels. The last exported snapshot of that tracker is `.beads/issues.jsonl` as of commit `5b25cfb`, if any of it is ever needed again.

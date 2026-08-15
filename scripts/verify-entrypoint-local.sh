@@ -6,10 +6,10 @@
 #
 # This is the fallback for hosts like paddock's own dev container, which has
 # no docker/podman binary, no reachable daemon, and no unprivileged
-# unshare(1) (so no mount-namespace or chroot isolation either) — see beads
-# memory paddock-s-own-dev-container-is-where-this. scripts/verify-entrypoint.sh
-# remains the higher-fidelity check (it runs the literal Dockerfile/compose
-# build) and should be preferred on any host with a working Docker daemon.
+# unshare(1) (so no mount-namespace or chroot isolation either).
+# scripts/verify-entrypoint.sh remains the higher-fidelity check (it runs the
+# literal Dockerfile/compose build) and should be preferred on any host with a
+# working Docker daemon.
 #
 # The scratch tree MUST live under $HOME, not /tmp: sshd's StrictModes checks
 # every directory in the AuthorizedKeysFile path chain, and /tmp is
