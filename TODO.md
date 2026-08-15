@@ -6,13 +6,13 @@ Beads was the tracker for this work and has been removed from the project. This 
 
 ## Blocked on a real Docker daemon
 
-None of the image work in the 3.0 rewrite was ever built. The dev container this repo is worked on from has no docker binary and no daemon socket, so every item here needs a run on the Colima host with the output brought back.
+The dev container this repo is worked on from has no docker binary and no daemon socket, so these need a run on the Colima host with the output brought back. As of 2026-08-14, run on the Colima host:
 
-- **Verify the vendored image builds at all** (`paddock-aye.1`, deferred after 3 failed attempts). The Dockerfile was vendored from agent-container and reconciled by hand against paddock's own fixes. Nothing has confirmed it produces a working image. Acceptance: a clean-cache build succeeds with no config dir present, a build with a real `*.crt` in `~/.config/paddock/certs/` has `update-ca-certificates` report it added, and changing `PADDOCK_TOOLS_REFRESH` rebuilds only the layers below the gate.
-- **Confirm the default CA build context resolves** (second half of `paddock-aye.5`). `src/paddock/image/ca-certificates/.gitkeep` is now tracked and verified present in the built wheel, which fixes the packaging half. The build half is unverified: no build has actually resolved `COPY --from=ca-certificates` against that directory.
-- **Run the entrypoint verify scripts.** `scripts/verify-entrypoint.sh` needs a daemon and has never run. `scripts/verify-entrypoint-local.sh` does not need one and passes.
-- **A real end to end pass** (`paddock-3t0.4`). Version bump and quality gates are done. Actually running `paddock build`, `up`, connecting, and `down` is not.
-- **Retire the agent-container repo** (`paddock-3t0.5`, out of tree). Blocked until the vendored image is proven equivalent.
+- ~~**Verify the vendored image builds at all**~~ Done. A clean-cache build with no config dir present succeeds, and changing `PADDOCK_TOOLS_REFRESH` rebuilds only the layers below the cache gate (confirmed via `--progress=plain`: layers 1-19 stay `CACHED` on a refresh build, 20-23 rerun for real).
+- **Confirm the default CA build context resolves with a real cert.** Still unverified: no machine with a `*.crt` handy to build against `~/.config/paddock/certs/` and check `update-ca-certificates` reports it added. The empty-default half is confirmed (the clean build above never fails for lack of a source).
+- ~~**Run the entrypoint verify scripts.**~~ Done. `scripts/verify-entrypoint.sh` now passes all 3 criteria after fixing two script bugs found by running it (not bugs in the image itself): its workdir used plain `mktemp -d`, which resolves outside the host paths Colima shares into its VM, so the `authorized_keys` bind mount came up silently empty — moved under `$HOME`. And its ssh login check compared exact string equality against captured output that also included ssh's "Permanently added to known hosts" notice — added `-o LogLevel=ERROR`. `scripts/verify-entrypoint-local.sh` doesn't need a daemon and already passed.
+- ~~**A real end to end pass.**~~ Done. `paddock build`, `up`, `status`, an ssh login, and `down` all worked against a real Colima daemon.
+- **Retire the agent-container repo** (out of tree). Everything above except the real-cert CA case now passes, so this is close. Still blocked on that one verification.
 
 ## Open work needing no Docker
 

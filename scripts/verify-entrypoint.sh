@@ -24,7 +24,12 @@ project="paddock-verify"
 image_tag="paddock-verify-entrypoint"
 port="${1:-2299}"
 
-workdir="$(mktemp -d)"
+# Under $HOME, not the system tmpdir: on VM-backed Docker setups (Colima and
+# similar), only specific host paths are shared into the VM, and $HOME is
+# reliably one of them while /tmp or /var/folders (macOS's default mktemp
+# location) may not be. A bind-mount source outside the shared paths mounts
+# as silently empty rather than erroring, which broke criterion 2 below.
+workdir="$(mktemp -d "$HOME/.paddock-verify.XXXXXX")"
 override_file="$workdir/docker-compose.override.yml"
 cat >"$override_file" <<EOF
 services:
@@ -109,11 +114,14 @@ else
 fi
 
 echo "== criterion 2: authorized_keys ownership/perms =="
-stat_out="$(compose exec -T agent stat -c '%U:%G %a' /home/agent/.ssh/authorized_keys)"
-if [ "$stat_out" = "agent:agent 600" ]; then
-    ok "authorized_keys is agent:agent 0600"
+if stat_out="$(compose exec -T agent stat -c '%U:%G %a' /home/agent/.ssh/authorized_keys 2>&1)"; then
+    if [ "$stat_out" = "agent:agent 600" ]; then
+        ok "authorized_keys is agent:agent 0600"
+    else
+        bad "authorized_keys is '$stat_out', expected 'agent:agent 600'"
+    fi
 else
-    bad "authorized_keys is '$stat_out', expected 'agent:agent 600'"
+    bad "authorized_keys stat failed: $stat_out"
 fi
 
 echo "== criterion 3: login with the config-dir authorized_keys =="
@@ -123,6 +131,7 @@ if login_out="$(ssh -i "$workdir/id_ed25519" \
     -o UserKnownHostsFile=/dev/null \
     -o BatchMode=yes \
     -o ConnectTimeout=10 \
+    -o LogLevel=ERROR \
     agent@127.0.0.1 'echo LOGIN_OK' 2>&1)" && [ "$login_out" = "LOGIN_OK" ]; then
     ok "ssh login succeeded with the mounted authorized_keys"
 else
