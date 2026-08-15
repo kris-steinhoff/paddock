@@ -126,17 +126,6 @@ RUN useradd -m -s /usr/bin/zsh agent \
     && chmod 700 /home/agent/.ssh \
     && chown -R agent:agent /home/agent/.ssh
 
-# Baked outside /etc/ssh, not straight into sshd_config.d: /etc/ssh is the
-# paddock_ssh_host_keys volume (so host keys survive container recreation),
-# and Docker only seeds a named volume from the image on its *first* use —
-# once created, the volume's own content always wins over the image, so a
-# later image rebuild would silently never reach a config file placed
-# directly under /etc/ssh. entrypoint.sh copies it into place on every start
-# instead, the same way it handles authorized_keys below.
-COPY sshd_config /etc/paddock/sshd_config
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod 755 /usr/local/bin/entrypoint.sh
-
 # chezmoi apply runs run_once_bootstrap.sh (which skips the brew step here
 # since brew isn't installed) to lay down dotfiles and pre-fetch the pinned
 # nvim plugins. Kept above the cache gate so that expensive plugin pre-fetch
@@ -184,6 +173,24 @@ RUN npm install -g @anthropic-ai/claude-code @github/copilot @openai/codex \
 # gate to track new versions. It installs to /usr/local/bin since that's
 # root-writable here.
 RUN curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
+
+# Baked outside /etc/ssh, not straight into sshd_config.d: /etc/ssh is the
+# paddock_ssh_host_keys volume (so host keys survive container recreation),
+# and Docker only seeds a named volume from the image on its *first* use —
+# once created, the volume's own content always wins over the image, so a
+# later image rebuild would silently never reach a config file placed
+# directly under /etc/ssh. entrypoint.sh copies it into place on every start
+# instead, the same way it handles authorized_keys.
+#
+# Kept down here, below the cache gate, on purpose: these are two trivial
+# COPYs, but higher up an edit to either would invalidate the `chezmoi
+# apply` layer below it and re-run that expensive nvim plugin pre-fetch.
+# Everything under the gate already rebuilds by default, so the position
+# costs nothing and makes entrypoint.sh cheap to change. Needs the USER root
+# above for the chmod.
+COPY sshd_config /etc/paddock/sshd_config
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 755 /usr/local/bin/entrypoint.sh
 
 # Land on agent, not root. `docker exec` (and so `paddock -- exec agent zsh`)
 # uses the image's USER, and a root shell in /home/agent quietly writes
