@@ -1,0 +1,40 @@
+name: paddock
+
+services:
+  agent:
+    build:
+      context: .
+      additional_contexts:
+        # Named build context for the Dockerfile's COPY --from=ca-certificates.
+        # The relative default resolves against this compose file's directory
+        # (i.e. the installed package), where an empty ca-certificates/ ships,
+        # so the build never fails for lack of a source. paddock only sets
+        # PADDOCK_CA_CONTEXT when the user has actually configured certs.
+        ca-certificates: ${PADDOCK_CA_CONTEXT:-./ca-certificates}
+      args:
+        # Cache gate for the fast-moving tools (see Dockerfile). Unset -> 0,
+        # which reuses the cache.
+        TOOLS_REFRESH: ${PADDOCK_TOOLS_REFRESH:-0}
+    image: paddock
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${PADDOCK_SSH_PORT:-2222}:22"
+      - "127.0.0.1:${PADDOCK_HTTP_PORT:-8000}:8000"
+    extra_hosts:
+      # Colima's host.docker.internal support has version-dependent quirks;
+      # this makes it explicit rather than relying on the VM defaults.
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - agent_home:/home/agent
+      - sshd_host_keys:/etc/ssh
+      - ${PADDOCK_AUTHORIZED_KEYS}:/run/paddock/authorized_keys:ro
+    environment:
+      # Valueless: resolved from paddock's own environment. Anything else
+      # goes in a per-machine override file.
+      - GITHUB_TOKEN
+      - GITLAB_TOKEN
+      - ANTHROPIC_API_KEY
+
+volumes:
+  agent_home:
+  sshd_host_keys:
