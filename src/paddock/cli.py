@@ -59,6 +59,23 @@ def _exec_compose(subcommand_args: list[str]) -> NoReturn:
         _fail(str(exc))
 
 
+def _warn_if_no_authorized_keys() -> None:
+    """Warn before starting a container that will silently refuse every ssh key.
+
+    ``interpolation_env`` always sets ``PADDOCK_AUTHORIZED_KEYS`` to this path
+    whether or not the file exists, so a missing file is not a compose error.
+    The container starts and sshd runs; it just has no keys to accept.
+    """
+    authorized_keys = paths.authorized_keys_path()
+    if not authorized_keys.exists():
+        typer.secho(
+            f"warning: {authorized_keys} does not exist; "
+            "the container will start but accept no ssh key",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+
+
 def _resolve_ssh_port() -> str:
     """Resolve the published ssh port using compose's own interpolation precedence.
 
@@ -78,11 +95,34 @@ def _resolve_ssh_port() -> str:
 
 
 @app.command()
+def init() -> None:
+    """Scaffold the config directory."""
+    config_dir = paths.config_dir()
+    certs_dir = paths.certs_dir()
+
+    created = [d for d in (config_dir, certs_dir) if not d.exists()]
+    for d in created:
+        d.mkdir(parents=True)
+
+    if created:
+        typer.echo("Created:")
+        for d in created:
+            typer.echo(f"  {d}")
+    else:
+        typer.echo(f"{config_dir} already exists; nothing to do.")
+
+    authorized_keys = paths.authorized_keys_path()
+    if not authorized_keys.exists():
+        typer.echo(f"\nAdd your public key(s) to {authorized_keys} to ssh in, e.g.:")
+        typer.echo(f"  ssh-add -L >> {authorized_keys}")
+
+
+@app.command()
 def build(
     cached: bool = typer.Option(
         False,
         "--cached",
-        help="Pin PADDOCK_TOOLS_REFRESH to 0, reusing the cached tool-install layer.",
+        help="Leave PADDOCK_TOOLS_REFRESH unset, reusing the cached tool-install layer.",
     ),
     no_cache: bool = typer.Option(
         False, "--no-cache", help="Full rebuild: pass --no-cache through to docker compose build."
@@ -101,10 +141,11 @@ def up(
     cached: bool = typer.Option(
         False,
         "--cached",
-        help="With --build, pin PADDOCK_TOOLS_REFRESH to 0 instead of refreshing.",
+        help="With --build, leave PADDOCK_TOOLS_REFRESH unset instead of refreshing.",
     ),
 ) -> None:
     """Start the container in the background."""
+    _warn_if_no_authorized_keys()
     args = ["up", "-d"]
     if build:
         args.append("--build")
@@ -129,6 +170,7 @@ def down(
 @app.command()
 def start() -> None:
     """Start the container."""
+    _warn_if_no_authorized_keys()
     _run_compose(["start"])
 
 
@@ -141,6 +183,7 @@ def stop() -> None:
 @app.command()
 def restart() -> None:
     """Restart the container."""
+    _warn_if_no_authorized_keys()
     _run_compose(["restart"])
 
 

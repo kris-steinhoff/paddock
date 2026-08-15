@@ -35,7 +35,18 @@ def test_bare_invocation_prints_help_and_exits_zero():
 def test_help_lists_every_subcommand():
     result = runner.invoke(cli.app, ["--help"])
     assert result.exit_code == 0
-    for name in ["build", "up", "down", "start", "stop", "restart", "status", "logs", "compose"]:
+    for name in [
+        "init",
+        "build",
+        "up",
+        "down",
+        "start",
+        "stop",
+        "restart",
+        "status",
+        "logs",
+        "compose",
+    ]:
         assert name in result.output
 
 
@@ -43,6 +54,36 @@ def test_version():
     result = runner.invoke(cli.app, ["--version"])
     assert result.exit_code == 0
     assert result.output.strip()
+
+
+def test_init_creates_config_and_certs_dirs(xdg_base: Path):
+    result = runner.invoke(cli.app, ["init"])
+
+    assert result.exit_code == 0
+    assert paths.config_dir().is_dir()
+    assert paths.certs_dir().is_dir()
+
+
+def test_init_prompts_for_authorized_keys_when_missing(xdg_base: Path):
+    result = runner.invoke(cli.app, ["init"])
+    assert "authorized_keys" in result.output
+
+
+def test_init_does_not_prompt_when_authorized_keys_present(xdg_base: Path):
+    paths.config_dir().mkdir(parents=True)
+    paths.authorized_keys_path().write_text("ssh-ed25519 AAAA... test\n")
+
+    result = runner.invoke(cli.app, ["init"])
+
+    assert "authorized_keys" not in result.output
+
+
+def test_init_is_idempotent(xdg_base: Path):
+    runner.invoke(cli.app, ["init"])
+    result = runner.invoke(cli.app, ["init"])
+
+    assert result.exit_code == 0
+    assert "already exists" in result.output
 
 
 def test_build_refreshes_tools_by_default(fake_compose, xdg_base: Path):
@@ -154,6 +195,28 @@ def test_compose_passthrough_forwards_multiple_args(fake_compose, xdg_base: Path
     runner.invoke(cli.app, ["compose", "--", "exec", "agent", "zsh"])
     _, args, _ = fake_compose[0]
     assert args[-3:] == ["exec", "agent", "zsh"]
+
+
+@pytest.mark.parametrize("name", ["up", "start", "restart"])
+def test_warns_when_authorized_keys_missing(fake_compose, xdg_base: Path, name: str):
+    result = runner.invoke(cli.app, [name])
+    assert "warning:" in result.output
+    assert "authorized_keys" in result.output
+
+
+@pytest.mark.parametrize("name", ["up", "start", "restart"])
+def test_no_warning_when_authorized_keys_present(fake_compose, xdg_base: Path, name: str):
+    paths.config_dir().mkdir(parents=True)
+    paths.authorized_keys_path().write_text("ssh-ed25519 AAAA... test\n")
+
+    result = runner.invoke(cli.app, [name])
+
+    assert "warning:" not in result.output
+
+
+def test_build_does_not_warn_about_authorized_keys(fake_compose, xdg_base: Path):
+    result = runner.invoke(cli.app, ["build"])
+    assert "warning:" not in result.output
 
 
 def test_compose_error_prints_error_and_exits_one(monkeypatch: pytest.MonkeyPatch, xdg_base: Path):

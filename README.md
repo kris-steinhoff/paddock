@@ -37,6 +37,7 @@ from the first command that needs it.
 ## Usage
 
 ```sh
+paddock init                            # scaffold the config directory
 paddock build [--cached] [--no-cache]   # build the image
 paddock up [--build] [--cached]         # start the container in the background
 paddock down [--volumes]                # stop and remove the container
@@ -82,19 +83,19 @@ paddock compose -- exec agent zsh
 
 ## Configuration
 
-Everything lives under `${XDG_CONFIG_HOME:-~/.config}/paddock`. Every file
-in it is optional to paddock, but without `authorized_keys` you can't ssh
-in:
+Everything lives under `${XDG_CONFIG_HOME:-~/.config}/paddock`. `paddock
+init` creates that directory and `certs/` inside it; every file in it is
+optional to paddock, but without `authorized_keys` you can't ssh in:
 
 - **`authorized_keys`**: public keys allowed to ssh in, in standard
   `authorized_keys` format. paddock always sets `PADDOCK_AUTHORIZED_KEYS`
   to this path and the compose file mounts it read-only into the container,
   where the entrypoint copies it to `/home/agent/.ssh/authorized_keys` with
-  the ownership and mode sshd's `StrictModes` demands. Nothing validates it
-  up front, so a missing file is not an error you'll see from paddock. The
-  symptom is a container that starts fine and refuses every key. Populate
-  it the normal way, or pull the public half straight out of your
-  ssh-agent:
+  the ownership and mode sshd's `StrictModes` demands. `up`, `start`, and
+  `restart` print a warning if the file doesn't exist, since compose itself
+  doesn't treat a missing file as an error: the container starts fine and
+  just refuses every key. Populate it the normal way, or pull the public
+  half straight out of your ssh-agent:
 
   ```sh
   ssh-add -L >> ~/.config/paddock/authorized_keys
